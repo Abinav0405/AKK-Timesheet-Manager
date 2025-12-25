@@ -42,10 +42,10 @@ ON CONFLICT (worker_id) DO UPDATE SET
     name = EXCLUDED.name,
     password_hash = EXCLUDED.password_hash;
 
--- Insert real sites with coordinates (only the 2 provided addresses)
+-- Insert real sites with ACCURATE coordinates
 INSERT INTO sites (site_name, latitude, longitude, qr_token) VALUES
-('Office', 1.3521, 103.8198, 'SITE_OFFICE_TOKEN'), -- 15 Kaki Bukit Rd 4, #01-50, Singapore 417808
-('415C Fernvale', 1.3888, 103.8977, 'SITE_415C_TOKEN') -- 415C Fernvale Link, Singapore 793415
+('Office', 1.3347, 103.9050, 'SITE_OFFICE_TOKEN'), -- 15 Kaki Bukit Rd 4, #01-50, Singapore 417808
+('415C Fernvale', 1.3908, 103.8973, 'SITE_415C_TOKEN') -- 415C Fernvale Link, Singapore 793415
 ON CONFLICT (qr_token) DO NOTHING;
 
 -- Site Mappings:
