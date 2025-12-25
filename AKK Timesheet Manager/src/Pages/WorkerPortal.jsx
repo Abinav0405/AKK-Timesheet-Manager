@@ -272,8 +272,8 @@ export default function WorkerPortal() {
                                 <ArrowLeft className="w-5 h-5" />
                             </Button>
                         </Link>
-                        <img
-                            src="/Akk logo.jpg"
+                                <img
+                            src="/Akk-logo.jpg"
                             alt="AKK Engineering Logo"
                             className="h-12 w-12 md:h-16 md:w-16 object-contain"
                         />
