@@ -89,7 +89,7 @@ export default function AdminLogin() {
                             {/* Logo */}
                             <div className="w-20 h-20 bg-white/10 rounded-3xl flex items-center justify-center backdrop-blur-sm overflow-hidden">
                                 <img
-                                    src="/akk logo.jpg"
+                                    src="/Akk-logo.jpg"
                                     alt="AKK Engineering Logo"
                                     className="h-full w-full object-cover drop-shadow-lg"
                                 />

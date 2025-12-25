@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from "@/supabase";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/Components/ui/card";
@@ -692,7 +692,7 @@ export default function AdminDashboard() {
                             </Button>
                         </Link>
                         <img
-                            src="/akk logo.jpg"
+                            src="/Akk-logo.jpg"
                             alt="AKK Engineering Logo"
                             className="h-12 w-12 object-contain"
                         />

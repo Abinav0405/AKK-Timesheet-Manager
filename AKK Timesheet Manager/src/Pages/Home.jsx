@@ -13,7 +13,7 @@ export default function Home() {
             <header className="bg-[#dc6b2f] text-white py-8 px-4 shadow-lg">
                 <div className="max-w-4xl mx-auto flex items-center justify-center gap-4">
                     <img
-                        src="/Akk logo.jpg"
+                        src="/Akk-logo.jpg"
                         alt="AKK Engineering Logo"
                         className="h-16 w-16 object-contain"
                     />
@@ -49,12 +49,7 @@ export default function Home() {
                         >
                             <Card className="cursor-pointer border-0 shadow-2xl bg-white overflow-hidden group h-full">
                                 <div className="p-10 md:p-12 text-center">
-                                    <img
-                                        src="/Akk logo.jpg"
-                                        alt="AKK Engineering Logo"
-                                        className="h-12 w-12 object-contain mx-auto mb-4 opacity-80"
-                                    />
-                                    <p className="text-[#dc6b2f] font-semibold text-sm mb-4 uppercase tracking-wide">
+                                    <p className="text-[#dc6b2f] font-semibold text-sm mb-6 uppercase tracking-wide">
                                         Official Timesheet Manager
                                     </p>
                                     <div className="w-24 h-24 bg-[#dc6b2f]/10 rounded-3xl flex items-center justify-center mx-auto mb-6 group-hover:bg-[#dc6b2f]/20 transition-colors">
@@ -83,12 +78,7 @@ export default function Home() {
                         >
                             <Card className="cursor-pointer border-0 shadow-2xl bg-white overflow-hidden group h-full">
                                 <div className="p-10 md:p-12 text-center">
-                                    <img
-                                        src="/Akk logo.jpg"
-                                        alt="AKK Engineering Logo"
-                                        className="h-12 w-12 object-contain mx-auto mb-4 opacity-80"
-                                    />
-                                    <p className="text-slate-700 font-semibold text-sm mb-4 uppercase tracking-wide">
+                                    <p className="text-slate-700 font-semibold text-sm mb-6 uppercase tracking-wide">
                                         Administrative Portal
                                     </p>
                                     <div className="w-24 h-24 bg-slate-700/10 rounded-3xl flex items-center justify-center mx-auto mb-6 group-hover:bg-slate-700/20 transition-colors">

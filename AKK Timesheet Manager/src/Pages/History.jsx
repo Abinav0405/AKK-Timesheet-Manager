@@ -122,7 +122,7 @@ export default function History() {
                             </Button>
                         </Link>
                         <img
-                            src="/akk logo.jpg"
+                            src="/Akk logo.jpg"
                             alt="AKK Engineering Logo"
                             className="h-12 w-12 md:h-16 md:w-16 object-contain"
                         />
