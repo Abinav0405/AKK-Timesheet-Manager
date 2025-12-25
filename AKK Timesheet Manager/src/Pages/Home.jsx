@@ -11,12 +11,7 @@ export default function Home() {
         <div className="min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200">
             {/* Header */}
             <header className="bg-[#dc6b2f] text-white py-8 px-4 shadow-lg">
-                <div className="max-w-4xl mx-auto flex items-center justify-center gap-4">
-                    <img
-                        src="/Akk-logo.jpg"
-                        alt="AKK Engineering Logo"
-                        className="h-16 w-16 object-contain"
-                    />
+                <div className="max-w-4xl mx-auto flex items-center justify-center">
                     <div className="text-center">
                         <h1 className="text-3xl md:text-4xl font-bold tracking-tight" style={{ fontFamily: 'Calibri, sans-serif' }}>
                             AKK ENGINEERING PTE. LTD.
@@ -53,7 +48,7 @@ export default function Home() {
                                         Official Timesheet Manager
                                     </p>
                                     <div className="w-24 h-24 bg-[#dc6b2f]/10 rounded-3xl flex items-center justify-center mx-auto mb-6 group-hover:bg-[#dc6b2f]/20 transition-colors">
-                                        <Clock className="w-12 h-12 text-[#dc6b2f]" />
+                                        <Clock className="w-16 h-16 text-[#dc6b2f]" />
                                     </div>
                                     <h3 className="text-3xl font-bold text-slate-800 mb-4">
                                         Clock In/Out
@@ -82,7 +77,7 @@ export default function Home() {
                                         Administrative Portal
                                     </p>
                                     <div className="w-24 h-24 bg-slate-700/10 rounded-3xl flex items-center justify-center mx-auto mb-6 group-hover:bg-slate-700/20 transition-colors">
-                                        <Shield className="w-12 h-12 text-slate-700" />
+                                        <Shield className="w-16 h-16 text-slate-700" />
                                     </div>
                                     <h3 className="text-3xl font-bold text-slate-800 mb-4">
                                         Admin

@@ -13,6 +13,7 @@ export default function AdminLogin() {
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [isLoading, setIsLoading] = useState(false);
+    const [logoUrl, setLogoUrl] = useState(localStorage.getItem('logoUrl') || '/Akk-logo.jpg');
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -89,7 +90,7 @@ export default function AdminLogin() {
                             {/* Logo */}
                             <div className="w-20 h-20 bg-white/10 rounded-3xl flex items-center justify-center backdrop-blur-sm overflow-hidden">
                                 <img
-                                    src="/Akk-logo.jpg"
+                                    src={logoUrl}
                                     alt="AKK Engineering Logo"
                                     className="h-full w-full object-cover drop-shadow-lg"
                                 />

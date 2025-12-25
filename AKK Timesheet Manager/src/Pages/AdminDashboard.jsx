@@ -46,6 +46,8 @@ export default function AdminDashboard() {
     const [siteFilter, setSiteFilter] = useState('all');
     const [expandedCards, setExpandedCards] = useState(new Set());
     const [isBulkPrinting, setIsBulkPrinting] = useState(false);
+    const [logoFile, setLogoFile] = useState(null);
+    const [logoUrl, setLogoUrl] = useState(localStorage.getItem('logoUrl') || '/Akk-logo.jpg');
 
     const queryClient = useQueryClient();
     const adminEmail = sessionStorage.getItem('adminEmail');
@@ -288,6 +290,24 @@ export default function AdminDashboard() {
         sessionStorage.removeItem('adminName');
         sessionStorage.removeItem('adminEmail');
         navigate(createPageUrl('Home'));
+    };
+
+    const handleUploadLogo = async () => {
+        if (!logoFile) {
+            toast.error('Please select a logo file');
+            return;
+        }
+        try {
+            const { data, error } = await supabase.storage.from('logos').upload('logo.jpg', logoFile, { upsert: true });
+            if (error) throw error;
+            const { data: urlData } = supabase.storage.from('logos').getPublicUrl('logo.jpg');
+            localStorage.setItem('logoUrl', urlData.publicUrl);
+            setLogoUrl(urlData.publicUrl);
+            toast.success('Logo uploaded successfully');
+        } catch (error) {
+            console.error('Upload error:', error);
+            toast.error('Failed to upload logo');
+        }
     };
 
     const filteredShifts = shifts.filter(s => {
@@ -692,7 +712,7 @@ export default function AdminDashboard() {
                             </Button>
                         </Link>
                         <img
-                            src="/Akk-logo.jpg"
+                            src={logoUrl}
                             alt="AKK Engineering Logo"
                             className="h-12 w-12 object-contain"
                         />
@@ -805,6 +825,25 @@ export default function AdminDashboard() {
                                     className="w-48 border-slate-200"
                                 />
                             </div>
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
+
+            {/* Logo Settings */}
+            <div className="max-w-6xl mx-auto px-4 pb-6">
+                <Card className="border-0 shadow-lg">
+                    <CardContent className="p-4">
+                        <h3 className="text-lg font-semibold mb-4">Logo Settings</h3>
+                        <div className="flex items-center gap-4">
+                            <Input
+                                type="file"
+                                accept="image/*"
+                                onChange={(e) => setLogoFile(e.target.files[0])}
+                            />
+                            <Button onClick={handleUploadLogo}>
+                                Upload Logo
+                            </Button>
                         </div>
                     </CardContent>
                 </Card>
