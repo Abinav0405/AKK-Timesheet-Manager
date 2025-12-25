@@ -456,35 +456,91 @@ export default function WorkerPortal() {
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -20 }}
-                            className="space-y-6"
+                            className="max-w-2xl mx-auto"
                         >
-                            <div className="text-center">
-                                <h2 className="text-2xl font-bold text-slate-800 mb-2">
+                            {/* Action Header */}
+                            <div className="text-center mb-8">
+                                <div className="inline-flex items-center justify-center w-20 h-20 bg-[#dc6b2f]/10 rounded-full mb-4">
+                                    {activeScan === 'entry' && <LogIn className="w-10 h-10 text-[#dc6b2f]" />}
+                                    {activeScan === 'lunch' && <Coffee className="w-10 h-10 text-[#dc6b2f]" />}
+                                    {activeScan === 'leave' && <LogOut className="w-10 h-10 text-[#dc6b2f]" />}
+                                </div>
+                                <h2 className="text-3xl font-bold text-slate-800 mb-2">
                                     {activeScan === 'entry' && 'Clock In'}
                                     {activeScan === 'lunch' && (canEndLunch ? 'End Lunch Break' : 'Start Lunch Break')}
                                     {activeScan === 'leave' && 'Clock Out'}
                                 </h2>
-                                <p className="text-slate-600">
-                                    Scan the QR code at your work site
+                                <p className="text-slate-600 text-lg">
+                                    {activeScan === 'entry' && 'Start your work shift by scanning the QR code at your site'}
+                                    {activeScan === 'lunch' && (canEndLunch ? 'Resume work by scanning the QR code' : 'Take a break by scanning the QR code')}
+                                    {activeScan === 'leave' && 'End your work shift by scanning the QR code at your site'}
                                 </p>
                             </div>
 
-                            <QRScanner
-                                action={activeScan}
-                                onScanSuccess={handleScanSuccess}
-                                onScanError={handleScanError}
-                                currentShiftSiteId={(activeScan === 'leave' || activeScan === 'lunch') ? currentShift?.site_id : null}
-                            />
+                            {/* Instructions Card */}
+                            <Card className="border-0 shadow-lg mb-6 bg-blue-50 border-blue-200">
+                                <CardContent className="p-6">
+                                    <h3 className="font-bold text-blue-800 mb-3 flex items-center gap-2">
+                                        <AlertCircle className="w-5 h-5" />
+                                        Scanning Instructions
+                                    </h3>
+                                    <div className="space-y-2 text-sm text-blue-700">
+                                        <p className="flex items-start gap-2">
+                                            <span className="font-bold text-blue-600 mt-1">1.</span>
+                                            <span>Ensure you're within 150 meters of the site location</span>
+                                        </p>
+                                        <p className="flex items-start gap-2">
+                                            <span className="font-bold text-blue-600 mt-1">2.</span>
+                                            <span>Allow camera and location permissions when prompted</span>
+                                        </p>
+                                        <p className="flex items-start gap-2">
+                                            <span className="font-bold text-blue-600 mt-1">3.</span>
+                                            <span>Point your camera at the QR code displayed at the site</span>
+                                        </p>
+                                        <p className="flex items-start gap-2">
+                                            <span className="font-bold text-blue-600 mt-1">4.</span>
+                                            <span>Hold steady until the scan completes automatically</span>
+                                        </p>
+                                    </div>
+                                </CardContent>
+                            </Card>
 
-                            <div className="flex justify-center">
+                            {/* QR Scanner */}
+                            <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+                                <h3 className="text-lg font-semibold text-slate-800 mb-4 text-center">
+                                    QR Code Scanner
+                                </h3>
+                                <QRScanner
+                                    action={activeScan}
+                                    onScanSuccess={handleScanSuccess}
+                                    onScanError={handleScanError}
+                                    currentShiftSiteId={(activeScan === 'leave' || activeScan === 'lunch') ? currentShift?.site_id : null}
+                                />
+                            </div>
+
+                            {/* Action Buttons */}
+                            <div className="flex gap-4 justify-center">
                                 <Button
                                     onClick={() => setActiveScan(null)}
                                     variant="outline"
                                     disabled={isProcessing}
+                                    className="px-8"
                                 >
-                                    Cancel Scan
+                                    Cancel & Go Back
                                 </Button>
                             </div>
+
+                            {/* Site Info */}
+                            {currentShift && (activeScan === 'leave' || activeScan === 'lunch') && (
+                                <Card className="border-0 shadow-md mt-6 bg-slate-50">
+                                    <CardContent className="p-4">
+                                        <p className="text-sm text-slate-600 text-center">
+                                            <MapPin className="w-4 h-4 inline mr-1" />
+                                            Current Site: <span className="font-medium text-slate-800">{currentShift.sites?.site_name}</span>
+                                        </p>
+                                    </CardContent>
+                                </Card>
+                            )}
                         </motion.div>
                     )}
                 </AnimatePresence>
