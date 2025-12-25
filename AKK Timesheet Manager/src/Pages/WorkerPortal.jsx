@@ -2,14 +2,25 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/Components/ui/card";
 import { Button } from "@/Components/ui/button";
 import { Badge } from "@/Components/ui/badge";
+import { Input } from "@/Components/ui/input";
+import { Textarea } from "@/Components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/Components/ui/select";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/Components/ui/dialog";
 import {
     Clock, LogIn, Coffee, LogOut, History, ArrowLeft,
-    MapPin, Calendar, User, CheckCircle, AlertCircle
+    MapPin, Calendar, User, CheckCircle, AlertCircle, FileText
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
 import { createPageUrl } from "@/lib/utils";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/supabase";
 import QRScanner from "@/Components/QRScanner";
 import { formatTime, formatDate, calculateShiftHours } from "@/lib/timeUtils";
@@ -19,6 +30,13 @@ export default function WorkerPortal() {
     const [activeScan, setActiveScan] = useState(null); // 'entry', 'lunch', 'leave'
     const [currentShift, setCurrentShift] = useState(null);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [showLeaveRequestDialog, setShowLeaveRequestDialog] = useState(false);
+    const [leaveRequestData, setLeaveRequestData] = useState({
+        leave_type: '',
+        from_date: '',
+        to_date: '',
+        reason: ''
+    });
 
     const workerId = sessionStorage.getItem('workerId');
     const workerName = sessionStorage.getItem('workerName');
@@ -89,14 +107,7 @@ export default function WorkerPortal() {
             const today = new Date().toISOString().split('T')[0];
 
             if (activeScan === 'entry') {
-                // Check if already clocked in today
-                if (currentShift && currentShift.entry_time) {
-                    toast.error("Already clocked in today");
-                    setIsProcessing(false);
-                    return;
-                }
-
-                // Create new shift record
+                // Allow multiple shifts per day - always create new shift record
                 const { data, error } = await supabase
                     .from('shifts')
                     .insert([{
@@ -257,6 +268,53 @@ export default function WorkerPortal() {
     const canEndLunch = currentShift && currentShift.lunch_start && !currentShift.lunch_end;
     const canClockOut = currentShift && currentShift.entry_time && !currentShift.has_left;
 
+    const queryClient = useQueryClient();
+
+    // Leave request mutation
+    const submitLeaveRequestMutation = useMutation({
+        mutationFn: async (leaveData) => {
+            const { error } = await supabase
+                .from('leave_requests')
+                .insert([{
+                    employee_id: workerId,
+                    employee_name: workerName,
+                    leave_type: leaveData.leave_type,
+                    from_date: leaveData.from_date,
+                    to_date: leaveData.to_date,
+                    reason: leaveData.reason,
+                    status: 'pending'
+                }]);
+            if (error) throw error;
+        },
+        onSuccess: () => {
+            toast.success('Leave request submitted successfully');
+            setShowLeaveRequestDialog(false);
+            setLeaveRequestData({
+                leave_type: '',
+                from_date: '',
+                to_date: '',
+                reason: ''
+            });
+        },
+    });
+
+    const handleSubmitLeaveRequest = () => {
+        if (!leaveRequestData.leave_type || !leaveRequestData.from_date || !leaveRequestData.to_date) {
+            toast.error('Please fill in all required fields');
+            return;
+        }
+
+        const fromDate = new Date(leaveRequestData.from_date);
+        const toDate = new Date(leaveRequestData.to_date);
+
+        if (toDate < fromDate) {
+            toast.error('To date cannot be before from date');
+            return;
+        }
+
+        submitLeaveRequestMutation.mutate(leaveRequestData);
+    };
+
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200">
             {/* Header */}
@@ -376,7 +434,7 @@ export default function WorkerPortal() {
                             </Card>
 
                             {/* Action Buttons */}
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                                 {/* Clock In */}
                                 <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
                                     <Card
@@ -444,6 +502,26 @@ export default function WorkerPortal() {
                                             </h3>
                                             <p className="text-slate-600 text-sm">
                                                 End your work shift
+                                            </p>
+                                        </CardContent>
+                                    </Card>
+                                </motion.div>
+
+                                {/* Leave Request */}
+                                <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                                    <Card
+                                        onClick={() => setShowLeaveRequestDialog(true)}
+                                        className="cursor-pointer border-0 shadow-lg transition-colors hover:bg-blue-50"
+                                    >
+                                        <CardContent className="p-6 text-center">
+                                            <div className="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                                                <FileText className="w-8 h-8 text-blue-600" />
+                                            </div>
+                                            <h3 className="text-xl font-bold text-slate-800 mb-2">
+                                                Leave Request
+                                            </h3>
+                                            <p className="text-slate-600 text-sm">
+                                                Submit leave application
                                             </p>
                                         </CardContent>
                                     </Card>
@@ -552,6 +630,95 @@ export default function WorkerPortal() {
                     © {new Date().getFullYear()} AKK ENGINEERING PTE. LTD. — Time Sheet System
                 </p>
             </footer>
+
+            {/* Leave Request Dialog */}
+            <Dialog open={showLeaveRequestDialog} onOpenChange={setShowLeaveRequestDialog}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Submit Leave Request</DialogTitle>
+                        <DialogDescription>
+                            Request for annual leave (AL) or medical leave (MC). All requests require admin approval.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Leave Type</label>
+                            <Select
+                                value={leaveRequestData.leave_type}
+                                onValueChange={(value) => setLeaveRequestData({ ...leaveRequestData, leave_type: value })}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Select leave type" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="AL">Annual Leave (AL)</SelectItem>
+                                    <SelectItem value="MC">Medical Leave (MC)</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">From Date</label>
+                                <Input
+                                    type="date"
+                                    value={leaveRequestData.from_date}
+                                    onChange={(e) => setLeaveRequestData({ ...leaveRequestData, from_date: e.target.value })}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">To Date</label>
+                                <Input
+                                    type="date"
+                                    value={leaveRequestData.to_date}
+                                    onChange={(e) => setLeaveRequestData({ ...leaveRequestData, to_date: e.target.value })}
+                                />
+                            </div>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Reason (Optional)</label>
+                            <Textarea
+                                placeholder="Please provide a reason for your leave request..."
+                                value={leaveRequestData.reason}
+                                onChange={(e) => setLeaveRequestData({ ...leaveRequestData, reason: e.target.value })}
+                                rows={3}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button
+                            variant="outline"
+                            onClick={() => {
+                                setShowLeaveRequestDialog(false);
+                                setLeaveRequestData({
+                                    leave_type: '',
+                                    from_date: '',
+                                    to_date: '',
+                                    reason: ''
+                                });
+                            }}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handleSubmitLeaveRequest}
+                            disabled={submitLeaveRequestMutation.isPending}
+                            className="bg-blue-600 hover:bg-blue-700"
+                        >
+                            {submitLeaveRequestMutation.isPending ? (
+                                <>
+                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                    Submitting...
+                                </>
+                            ) : (
+                                <>
+                                    <FileText className="w-4 h-4 mr-2" />
+                                    Submit Request
+                                </>
+                            )}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

@@ -7,7 +7,7 @@ import { Input } from "@/Components/ui/input";
 import { User, UserCheck, ArrowLeft, Loader2, Lock } from "lucide-react";
 import { motion } from "framer-motion";
 import { supabase } from "@/supabase";
-import bcrypt from 'bcryptjs';
+
 import { toast } from "sonner";
 
 export default function WorkerLogin() {
@@ -40,7 +40,7 @@ export default function WorkerLogin() {
                 return;
             }
 
-            // Verify password (plain text for testing)
+            // Verify password (plain text comparison)
             if (password !== worker.password_hash) {
                 toast.error("Invalid Worker ID or Password");
                 setIsLoading(false);

@@ -87,59 +87,81 @@ export function calculateShiftHours(entryTime, leaveTime, lunchStart, lunchEnd, 
     const isSunday = date.getDay() === 0;
     const isHoliday = isPublicHoliday(date);
 
-    // Calculate total time
-    let totalMinutes = calculateMinutes(entryTime, leaveTime);
+    // Calculate total time from entry to leave
+    const totalMinutes = calculateMinutes(entryTime, leaveTime);
 
-    // Calculate lunch time (exclude from all calculations)
+    // Calculate lunch time (subtract only once from total time)
     let lunchMinutes = 0;
     if (lunchStart && lunchEnd) {
         lunchMinutes = calculateMinutes(lunchStart, lunchEnd);
     }
 
-    // Calculate actual worked time (total - lunch)
-    let workedMinutes = totalMinutes - lunchMinutes;
+    // Calculate productive time (total time minus lunch break)
+    const productiveMinutes = totalMinutes - lunchMinutes;
 
-    // Calculate OT (time after 5:00 PM)
+    // Determine regular work period (up to 5:00 PM)
     const normalEndTime = getNormalWorkEndTime(date);
+    const entryDateTime = new Date(entryTime);
     const leaveDateTime = new Date(leaveTime);
 
-    let otMinutes = 0;
-    if (leaveDateTime > normalEndTime) {
-        // Calculate OT from 5:00 PM to leave time, but exclude lunch time that falls within OT period
-        const otStart = new Date(Math.max(new Date(entryTime), normalEndTime));
-        let otEnd = leaveDateTime;
+    // Calculate how much productive time falls within regular hours (before 5 PM)
+    const regularStart = entryDateTime;
+    const regularEnd = new Date(Math.min(leaveDateTime, normalEndTime));
+    let regularMinutes = 0;
 
-        // If lunch overlaps with OT period, subtract lunch time from OT
+    if (regularEnd > regularStart) {
+        regularMinutes = calculateMinutes(regularStart, regularEnd);
+        // Subtract lunch time that falls within regular hours
         if (lunchStart && lunchEnd) {
             const lunchStartTime = new Date(lunchStart);
             const lunchEndTime = new Date(lunchEnd);
-
-            if (lunchStartTime < otEnd && lunchEndTime > otStart) {
-                const lunchOverlapStart = new Date(Math.max(lunchStartTime, otStart));
-                const lunchOverlapEnd = new Date(Math.min(lunchEndTime, otEnd));
-                const lunchOverlapMinutes = calculateMinutes(lunchOverlapStart, lunchOverlapEnd);
-                otMinutes = calculateMinutes(otStart, otEnd) - lunchOverlapMinutes;
-            } else {
-                otMinutes = calculateMinutes(otStart, otEnd);
+            if (lunchStartTime < regularEnd && lunchEndTime > regularStart) {
+                const lunchOverlapStart = new Date(Math.max(lunchStartTime, regularStart));
+                const lunchOverlapEnd = new Date(Math.min(lunchEndTime, regularEnd));
+                const lunchInRegularMinutes = calculateMinutes(lunchOverlapStart, lunchOverlapEnd);
+                regularMinutes -= lunchInRegularMinutes;
             }
-        } else {
-            otMinutes = calculateMinutes(otStart, otEnd);
         }
     }
 
-    // Adjust worked minutes (worked time should not include OT time)
-    workedMinutes = workedMinutes - otMinutes;
+    // Calculate OT time (after 5:00 PM)
+    let otMinutes = 0;
+    if (leaveDateTime > normalEndTime) {
+        const otStart = new Date(Math.max(entryDateTime, normalEndTime));
+        const otEnd = leaveDateTime;
+        otMinutes = calculateMinutes(otStart, otEnd);
 
-    // Sunday logic: if it's Sunday, all worked hours become sunday hours
+        // Subtract lunch time that falls within OT hours
+        if (lunchStart && lunchEnd) {
+            const lunchStartTime = new Date(lunchStart);
+            const lunchEndTime = new Date(lunchEnd);
+            if (lunchStartTime < otEnd && lunchEndTime > otStart) {
+                const lunchOverlapStart = new Date(Math.max(lunchStartTime, otStart));
+                const lunchOverlapEnd = new Date(Math.min(lunchEndTime, otEnd));
+                const lunchInOtMinutes = calculateMinutes(lunchOverlapStart, lunchOverlapEnd);
+                otMinutes -= lunchInOtMinutes;
+            }
+        }
+    }
+
+    // Ensure we don't double-count time
+    const totalAccountedMinutes = regularMinutes + otMinutes;
+    if (totalAccountedMinutes > productiveMinutes) {
+        // Adjust OT minutes if there's overlap or calculation error
+        otMinutes = Math.max(0, productiveMinutes - regularMinutes);
+    }
+
+    // Apply Sunday/Public Holiday logic
     let workedHours = 0;
     let sundayHours = 0;
     let otHours = otMinutes / 60;
 
-    if (isSunday) {
-        sundayHours = workedMinutes / 60;
-        // OT on Sunday still counts as OT (not double)
+    if (isSunday || isHoliday) {
+        // On Sundays and public holidays, regular work hours become Sunday/PH hours
+        sundayHours = regularMinutes / 60;
+        // OT remains as OT (not double-counted)
     } else {
-        workedHours = workedMinutes / 60;
+        workedHours = regularMinutes / 60;
     }
 
     // Round to 2 decimal places
@@ -154,7 +176,7 @@ export function calculateShiftHours(entryTime, leaveTime, lunchStart, lunchEnd, 
         totalMinutes,
         lunchMinutes,
         otMinutes,
-        workedMinutes
+        workedMinutes: regularMinutes
     };
 }
 
