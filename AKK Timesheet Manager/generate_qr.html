@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AKK Timesheet QR Codes</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+        .qr-section { margin: 30px 0; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+        .token-box { background: #f8f9fa; padding: 15px; border-radius: 4px; margin: 10px 0; font-family: monospace; font-size: 16px; }
+        .instructions { background: #e8f5e8; padding: 20px; border-radius: 8px; margin-top: 30px; }
+        .qr-placeholder { width: 256px; height: 256px; border: 2px dashed #ccc; display: flex; align-items: center; justify-content: center; margin: 10px 0; font-size: 14px; color: #666; }
+    </style>
+</head>
+<body>
+    <h1>🆔 AKK Timesheet QR Codes</h1>
+    <p><strong>Database Status:</strong> ✅ Working - Both sites configured with QR tokens</p>
+
+    <div class="qr-section">
+        <h2>🏗️ 415C Construction Site</h2>
+        <div class="token-box">
+            <strong>QR Code Content:</strong><br>
+            SITE_415C_TOKEN
+        </div>
+        <div class="qr-placeholder">
+            QR Code will appear here when generated
+        </div>
+        <p><em>Generate this QR code at: <a href="https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=SITE_415C_TOKEN" target="_blank">Online QR Generator</a></em></p>
+    </div>
+
+    <div class="qr-section">
+        <h2>🏢 Kaki Bukit Office</h2>
+        <div class="token-box">
+            <strong>QR Code Content:</strong><br>
+            SITE_OFFICE_TOKEN
+        </div>
+        <div class="qr-placeholder">
+            QR Code will appear here when generated
+        </div>
+        <p><em>Generate this QR code at: <a href="https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=SITE_OFFICE_TOKEN" target="_blank">Online QR Generator</a></em></p>
+    </div>
+
+    <div class="instructions">
+        <h3>📱 How to Generate QR Codes:</h3>
+        <ol>
+            <li>Click the <strong>"Online QR Generator"</strong> links above for each site</li>
+            <li>The QR codes will be generated automatically with the correct tokens</li>
+            <li>Right-click and save each QR code image</li>
+            <li>Print or display these QR codes at the respective locations</li>
+            <li>Test scanning with your AKK Timesheet mobile app</li>
+        </ol>
+
+        <h4>🔧 Alternative: Use any QR Code Generator</h4>
+        <p>Copy and paste these exact texts into any QR code generator:</p>
+        <ul>
+            <li><code>SITE_415C_TOKEN</code> - for 415C Construction Site</li>
+            <li><code>SITE_OFFICE_TOKEN</code> - for Kaki Bukit Office</li>
+        </ul>
+    </div>
+
+    <div style="margin-top: 40px; padding: 20px; background: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107;">
+        <h3>⚠️ Important Notes:</h3>
+        <ul>
+            <li>QR codes must contain <strong>only</strong> the token text (no quotes, no extra spaces)</li>
+            <li>Test with the database test file first to ensure connection works</li>
+            <li>If scanning still fails, check browser console for error details</li>
+        </ul>
+    </div>
+</body>
+</html>

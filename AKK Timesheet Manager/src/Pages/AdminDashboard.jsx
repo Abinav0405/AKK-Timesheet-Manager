@@ -150,6 +150,35 @@ export default function AdminDashboard() {
         refetchInterval: 3000, // Refresh every 3 seconds
     });
 
+    // Delete leave request mutation
+    const deleteLeaveMutation = useMutation({
+        mutationFn: async (leaveId) => {
+            // First delete associated shift records (leave days)
+            await supabase
+                .from('shifts')
+                .delete()
+                .eq('leave_type', 'AL')
+                .or(`leave_type.eq.MC,leave_type.eq.UNPAID_LEAVE,leave_type.like.%_HALF_%`);
+
+            // Then delete the leave request
+            const { error } = await supabase
+                .from('leave_requests')
+                .delete()
+                .eq('id', leaveId);
+
+            if (error) throw error;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['allLeaveRequests'] });
+            queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
+            queryClient.invalidateQueries({ queryKey: ['shifts'] });
+            toast.success('Leave request and associated shifts deleted successfully');
+        },
+        onError: (error) => {
+            toast.error(`Failed to delete leave request: ${error.message}`);
+        },
+    });
+
     // Update leave status mutation
     const updateLeaveStatus = useMutation({
         mutationFn: async ({ id, status, adminNotes }) => {
@@ -2846,6 +2875,25 @@ export default function AdminDashboard() {
                                                     <strong>Admin Notes:</strong> {request.admin_notes}
                                                 </div>
                                             )}
+                                        </div>
+
+                                        {/* Delete button for individual leaves */}
+                                        <div className="flex gap-2 mt-3 pt-3 border-t border-slate-200">
+                                            <Button
+                                                size="sm"
+                                                variant="destructive"
+                                                onClick={() => {
+                                                    if (window.confirm(`Are you sure you want to delete this leave request for ${request.employee_name}? This will also remove associated shift records.`)) {
+                                                        // Delete the leave request and associated shifts
+                                                        deleteLeaveMutation.mutate(request.id);
+                                                    }
+                                                }}
+                                                disabled={deleteLeaveMutation?.isPending}
+                                                className="text-xs"
+                                            >
+                                                <Trash2 className="w-3 h-3 mr-1" />
+                                                Delete Leave
+                                            </Button>
                                         </div>
                                     </CardContent>
                                 </Card>

@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS sites (
   site_name TEXT NOT NULL,
   latitude NUMERIC(10,8),
   longitude NUMERIC(11,8),
+  qr_token TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
@@ -136,6 +137,50 @@ ALTER TABLE sites ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_status ENABLE ROW LEVEL SECURITY;
 
 -- ========================================
+-- ROW LEVEL SECURITY POLICIES
+-- ========================================
+
+-- Sites table: Allow public read access for QR scanning
+CREATE POLICY "Allow public read access to sites" ON sites
+    FOR SELECT USING (true);
+
+-- Worker details: Allow login verification (authentication handled at app level)
+CREATE POLICY "Allow worker login verification" ON worker_details
+    FOR SELECT USING (true);
+
+-- Working days config: Allow public read access
+CREATE POLICY "Allow public read access to working days config" ON working_days_config
+    FOR SELECT USING (true);
+
+-- Shifts: Allow operations on shifts (authentication handled at app level)
+CREATE POLICY "Allow shift operations" ON shifts
+    FOR SELECT USING (true);
+CREATE POLICY "Allow shift inserts" ON shifts
+    FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow shift updates" ON shifts
+    FOR UPDATE USING (true);
+
+-- Leave requests: Allow operations on leave requests (authentication handled at app level)
+CREATE POLICY "Allow leave request operations" ON leave_requests
+    FOR SELECT USING (true);
+CREATE POLICY "Allow leave request inserts" ON leave_requests
+    FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow leave request updates" ON leave_requests
+    FOR UPDATE USING (true);
+
+-- Breaks: Allow operations on breaks (authentication handled at app level)
+CREATE POLICY "Allow break operations" ON breaks
+    FOR SELECT USING (true);
+CREATE POLICY "Allow break inserts" ON breaks
+    FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow break updates" ON breaks
+    FOR UPDATE USING (true);
+
+-- Admin status: Allow admins to manage their status
+CREATE POLICY "Admins can manage their own status" ON admin_status
+    FOR ALL USING (auth.jwt() ->> 'email' = admin_email);
+
+-- ========================================
 -- INSERT WORKING DAYS CONFIGURATION
 -- ========================================
 
@@ -150,6 +195,19 @@ VALUES
 (2026, 1, 27), (2026, 2, 24), (2026, 3, 26), (2026, 4, 26), (2026, 5, 26), (2026, 6, 26),
 (2026, 7, 27), (2026, 8, 26), (2026, 9, 26), (2026, 10, 27), (2026, 11, 25), (2026, 12, 27)
 ON CONFLICT (year, month) DO NOTHING;
+
+-- ========================================
+-- INSERT SITE LOCATIONS WITH QR TOKENS
+-- ========================================
+
+INSERT INTO sites (id, site_name, latitude, longitude, qr_token) VALUES
+('415c', '415c Construction Site', 1.3893916491439324, 103.88050290014863, 'SITE_415C_TOKEN'),
+('office', 'Kaki Bukit Office', 1.3392899533456875, 103.9114000437236, 'SITE_OFFICE_TOKEN')
+ON CONFLICT (id) DO UPDATE SET
+  site_name = EXCLUDED.site_name,
+  latitude = EXCLUDED.latitude,
+  longitude = EXCLUDED.longitude,
+  qr_token = EXCLUDED.qr_token;
 
 -- ========================================
 -- INSERT WORKER DETAILS DATA (WITH LOGIN CREDENTIALS)
@@ -197,6 +255,7 @@ INSERT INTO worker_details (employee_id, nric_fin, employee_name, designation, d
 
 -- Your AKK Timesheet Manager database is now fully set up with:
 -- ✅ All required tables and relationships
+-- ✅ Site locations with QR tokens for clock-in/out
 -- ✅ Comprehensive test data for November 2025
 -- ✅ Multiple workers with realistic shifts and breaks
 -- ✅ Approved and pending leave requests

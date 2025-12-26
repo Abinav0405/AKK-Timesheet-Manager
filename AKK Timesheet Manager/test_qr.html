@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Database Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+    <h1>QR Database Test</h1>
+    <button id="testBtn">Test QR Tokens</button>
+    <div id="results"></div>
+
+    <script>
+        // Supabase configuration
+        const supabaseUrl = 'https://xuqvzlbfqdkfjjhdvzac.supabase.co';
+        const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh1cXZ6bGJmcWRrZmpqaGR2emFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY1ODI2MTMsImV4cCI6MjA4MjE1ODYxM30.akHZLx4HAZwd0qQreDuOhLoh1WhCLjGvelw5CbyuSkU';
+
+        const dbClient = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+
+        document.getElementById('testBtn').addEventListener('click', async () => {
+            const results = document.getElementById('results');
+            results.innerHTML = '<p>Testing...</p>';
+
+            try {
+                // Test 415C token
+                const { data: site415c, error: error415c } = await dbClient
+                    .from('sites')
+                    .select('*')
+                    .eq('qr_token', 'SITE_415C_TOKEN')
+                    .single();
+
+                // Test Office token
+                const { data: siteOffice, error: errorOffice } = await dbClient
+                    .from('sites')
+                    .select('*')
+                    .eq('qr_token', 'SITE_OFFICE_TOKEN')
+                    .single();
+
+                // Get all sites
+                const { data: allSites, error: allError } = await dbClient
+                    .from('sites')
+                    .select('*');
+
+                let html = '<h2>Test Results:</h2>';
+
+                html += '<h3>415C Token Test:</h3>';
+                if (error415c) {
+                    html += `<p style="color: red;">❌ Error: ${error415c.message}</p>`;
+                } else if (site415c) {
+                    html += `<p style="color: green;">✅ Found: ${site415c.site_name} (${site415c.qr_token})</p>`;
+                } else {
+                    html += '<p style="color: red;">❌ No site found for SITE_415C_TOKEN</p>';
+                }
+
+                html += '<h3>Office Token Test:</h3>';
+                if (errorOffice) {
+                    html += `<p style="color: red;">❌ Error: ${errorOffice.message}</p>`;
+                } else if (siteOffice) {
+                    html += `<p style="color: green;">✅ Found: ${siteOffice.site_name} (${siteOffice.qr_token})</p>`;
+                } else {
+                    html += '<p style="color: red;">❌ No site found for SITE_OFFICE_TOKEN</p>';
+                }
+
+                html += '<h3>All Sites in Database:</h3>';
+                if (allError) {
+                    html += `<p style="color: red;">❌ Error getting all sites: ${allError.message}</p>`;
+                } else if (allSites && allSites.length > 0) {
+                    html += '<ul>';
+                    allSites.forEach(site => {
+                        html += `<li>${site.id}: ${site.site_name} - Token: ${site.qr_token || 'NULL'}</li>`;
+                    });
+                    html += '</ul>';
+                } else {
+                    html += '<p style="color: red;">❌ No sites found in database</p>';
+                }
+
+                results.innerHTML = html;
+
+            } catch (error) {
+                results.innerHTML = `<p style="color: red;">Test failed: ${error.message}</p>`;
+            }
+        });
+    </script>
+</body>
+</html>

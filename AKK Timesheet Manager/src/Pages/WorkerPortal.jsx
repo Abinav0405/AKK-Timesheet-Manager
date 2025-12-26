@@ -361,7 +361,16 @@ export default function WorkerPortal() {
             return;
         }
 
-        submitLeaveRequestMutation.mutate(leaveRequestData);
+        // Calculate the number of days requested
+        const timeDiff = toDate.getTime() - fromDate.getTime();
+        const daysRequested = Math.ceil(timeDiff / (1000 * 3600 * 24)) + 1; // +1 to include both start and end dates
+
+        const leaveDataWithDays = {
+            ...leaveRequestData,
+            days_requested: daysRequested
+        };
+
+        submitLeaveRequestMutation.mutate(leaveDataWithDays);
     };
 
     return (
