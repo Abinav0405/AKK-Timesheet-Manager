@@ -46,6 +46,7 @@ CREATE TABLE leave_requests (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   employee_id TEXT NOT NULL,
   leave_type TEXT NOT NULL CHECK (leave_type IN ('AL', 'MC')),
+  leave_duration TEXT NOT NULL DEFAULT 'full_day' CHECK (leave_duration IN ('full_day', 'half_day_morning', 'half_day_afternoon')),
   from_date DATE NOT NULL,
   to_date DATE NOT NULL,
   reason TEXT,
@@ -85,6 +86,45 @@ CREATE POLICY "working_days_config_select_policy" ON working_days_config FOR SEL
 CREATE POLICY "working_days_config_insert_policy" ON working_days_config FOR INSERT WITH CHECK (true);
 CREATE POLICY "working_days_config_update_policy" ON working_days_config FOR UPDATE USING (true) WITH CHECK (true);
 CREATE POLICY "working_days_config_delete_policy" ON working_days_config FOR DELETE USING (true);
+
+-- Create shifts table (if not exists)
+CREATE TABLE IF NOT EXISTS shifts (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  worker_id TEXT NOT NULL,
+  site_id TEXT,
+  work_date DATE NOT NULL,
+  entry_time TIMESTAMP WITH TIME ZONE,
+  leave_time TIMESTAMP WITH TIME ZONE,
+  lunch_start TIMESTAMP WITH TIME ZONE,
+  lunch_end TIMESTAMP WITH TIME ZONE,
+  has_left BOOLEAN DEFAULT false,
+  worked_hours NUMERIC(5,2) DEFAULT 0,
+  sunday_hours NUMERIC(5,2) DEFAULT 0,
+  ot_hours NUMERIC(5,2) DEFAULT 0,
+  leave_type TEXT CHECK (leave_type IN ('AL', 'MC', 'UNPAID_LEAVE')),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Enable RLS on shifts table
+ALTER TABLE shifts ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies for shifts table
+CREATE POLICY "shifts_select_policy" ON shifts FOR SELECT USING (
+  auth.jwt() ->> 'role' = 'admin' OR
+  auth.jwt() ->> 'worker_id' = worker_id
+);
+CREATE POLICY "shifts_insert_policy" ON shifts FOR INSERT WITH CHECK (
+  auth.jwt() ->> 'role' = 'admin' OR
+  auth.jwt() ->> 'worker_id' = worker_id
+);
+CREATE POLICY "shifts_update_policy" ON shifts FOR UPDATE USING (
+  auth.jwt() ->> 'role' = 'admin' OR
+  auth.jwt() ->> 'worker_id' = worker_id
+);
+CREATE POLICY "shifts_delete_policy" ON shifts FOR DELETE USING (
+  auth.jwt() ->> 'role' = 'admin' OR
+  auth.jwt() ->> 'worker_id' = worker_id
+);
 
 -- RLS Policies for leave_requests
 CREATE POLICY "leave_requests_select_policy" ON leave_requests FOR SELECT USING (true);
@@ -133,6 +173,56 @@ INSERT INTO worker_details (employee_id, nric_fin, employee_name, designation, d
 ('1049', 'Fxxxx546U', 'Venu Vijayakumar', 'Con''s Heavy Truck Driver', '2025-09-02', 'DBS 357-09778-9', 10.00, 80.00, 1270.00),
 ('1050', 'Mxxxx678T', 'A P Subashchandrabose', 'Construction Worker', '2025-10-02', 'DBS 450-84309-1', 5.31, 51.92, 675.00),
 ('1052', 'Mxxxx762U', 'Pugalenthi Akash', 'Construction Worker', '2025-10-30', 'DBS 450-84309-1', 4.50, 44.00, 572.00);
+
+*/
+
+/*
+
+-- MIGRATION: Rename Lunch to Breaks and Add Multiple Breaks Support
+-- Run this SQL in Supabase SQL Editor to migrate existing data
+
+-- Step 1: Create breaks table for multiple breaks per shift
+CREATE TABLE breaks (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  shift_id UUID NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+  break_start TIMESTAMP WITH TIME ZONE NOT NULL,
+  break_end TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Step 2: Migrate existing lunch data to breaks table
+INSERT INTO breaks (shift_id, break_start, break_end)
+SELECT id, lunch_start, lunch_end
+FROM shifts
+WHERE lunch_start IS NOT NULL;
+
+-- Step 3: Add leave_type column to shifts table
+ALTER TABLE shifts ADD COLUMN leave_type TEXT CHECK (leave_type IN ('AL', 'MC', 'UNPAID_LEAVE'));
+
+-- Step 4: Create index for leave queries
+CREATE INDEX idx_shifts_leave_type ON shifts(leave_type);
+CREATE INDEX idx_shifts_work_date_worker_id ON shifts(work_date, worker_id);
+
+-- Step 5: Enable RLS on breaks table
+ALTER TABLE breaks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "breaks_select_policy" ON breaks FOR SELECT USING (true);
+CREATE POLICY "breaks_insert_policy" ON breaks FOR INSERT WITH CHECK (true);
+CREATE POLICY "breaks_update_policy" ON breaks FOR UPDATE USING (true) WITH CHECK (true);
+CREATE POLICY "breaks_delete_policy" ON breaks FOR DELETE USING (true);
+
+-- Step 6: Update worker_details to include leave balances
+ALTER TABLE worker_details
+ADD COLUMN annual_leave_balance INTEGER DEFAULT 14,
+ADD COLUMN medical_leave_balance INTEGER DEFAULT 14;
+
+-- Update existing workers with default leave balances
+UPDATE worker_details SET annual_leave_balance = 14, medical_leave_balance = 14;
+
+-- Step 7: Add leave balance tracking to leave_requests
+ALTER TABLE leave_requests ADD COLUMN days_requested INTEGER;
+
+-- Update existing leave requests with calculated days
+UPDATE leave_requests SET days_requested = DATE_PART('day', to_date - from_date + 1);
 
 */
 

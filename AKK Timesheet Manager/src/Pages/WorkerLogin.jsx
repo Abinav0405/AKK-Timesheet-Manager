@@ -29,9 +29,9 @@ export default function WorkerLogin() {
 
             // Fetch worker from database
             const { data: worker, error } = await supabase
-                .from('workers')
+                .from('worker_details')
                 .select('*')
-                .eq('worker_id', workerId.trim())
+                .eq('employee_id', workerId.trim())
                 .single();
 
             if (error || !worker) {
@@ -49,10 +49,10 @@ export default function WorkerLogin() {
 
             // Store worker info in sessionStorage
             sessionStorage.setItem('workerLoggedIn', 'true');
-            sessionStorage.setItem('workerName', worker.name);
-            sessionStorage.setItem('workerId', worker.worker_id);
+            sessionStorage.setItem('workerName', worker.employee_name);
+            sessionStorage.setItem('workerId', worker.employee_id);
 
-            toast.success(`Welcome back, ${worker.name}!`);
+            toast.success(`Welcome back, ${worker.employee_name}!`);
             setIsLoading(false);
             navigate(createPageUrl('WorkerPortal'));
         } catch (error) {

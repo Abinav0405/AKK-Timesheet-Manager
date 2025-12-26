@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from "@/supabase";
+import React, { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/Components/ui/card";
 import { Button } from "@/Components/ui/button";
@@ -27,7 +27,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import * as XLSX from 'xlsx';
 import { toast } from "sonner";
 import { sendBrowserNotification } from "@/lib/emailNotification";
-import { formatTime, formatDate, isSunday, isPublicHoliday } from "@/lib/timeUtils";
+import { formatTime, formatDate, isSunday, isPublicHoliday, calculateShiftHours } from "@/lib/timeUtils";
 
 export default function AdminDashboard() {
     const navigate = useNavigate();
@@ -53,6 +53,7 @@ export default function AdminDashboard() {
     const [expandedCards, setExpandedCards] = useState(new Set());
     const [isBulkPrinting, setIsBulkPrinting] = useState(false);
     const [logoUrl, setLogoUrl] = useState(localStorage.getItem('logoUrl') || '/Akk-logo.jpg');
+    const [showLeaveHistory, setShowLeaveHistory] = useState(false);
 
     // Worker Information states
     const [showAddWorkerDialog, setShowAddWorkerDialog] = useState(false);
@@ -79,7 +80,41 @@ export default function AdminDashboard() {
     const adminEmail = sessionStorage.getItem('adminEmail');
     const [adminStatusId, setAdminStatusId] = useState(null);
 
-    // Leave requests query
+    // Leave requests query - ALL requests for history
+    const { data: allLeaveRequests = [], isLoading: isLoadingAllLeaveRequests } = useQuery({
+        queryKey: ['allLeaveRequests'],
+        queryFn: async () => {
+            const { data, error } = await supabase
+                .from('leave_requests')
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            if (error) throw error;
+
+            // If we have leave requests, fetch worker details separately
+            if (data && data.length > 0) {
+                const workerIds = [...new Set(data.map(request => request.employee_id))];
+                const { data: workers, error: workersError } = await supabase
+                    .from('worker_details')
+                    .select('employee_id, employee_name')
+                    .in('employee_id', workerIds);
+
+                if (workersError) console.error('❌ Workers fetch error:', workersError);
+
+                // Merge data into leave requests
+                const leaveRequestsWithNames = data.map(request => ({
+                    ...request,
+                    employee_name: workers?.find(w => w.employee_id === request.employee_id)?.employee_name || 'Unknown'
+                }));
+
+                return leaveRequestsWithNames;
+            }
+
+            return data || [];
+        },
+    });
+
+    // Pending leave requests query
     const { data: leaveRequests = [], isLoading: isLoadingLeaveRequests } = useQuery({
         queryKey: ['leaveRequests'],
         queryFn: async () => {
@@ -90,15 +125,45 @@ export default function AdminDashboard() {
                 .order('created_at', { ascending: false });
 
             if (error) throw error;
+
+            // If we have leave requests, fetch worker details separately
+            if (data && data.length > 0) {
+                const workerIds = [...new Set(data.map(request => request.employee_id))];
+                const { data: workers, error: workersError } = await supabase
+                    .from('worker_details')
+                    .select('employee_id, employee_name')
+                    .in('employee_id', workerIds);
+
+                if (workersError) console.error('❌ Workers fetch error:', workersError);
+
+                // Merge data into leave requests
+                const leaveRequestsWithNames = data.map(request => ({
+                    ...request,
+                    employee_name: workers?.find(w => w.employee_id === request.employee_id)?.employee_name || 'Unknown'
+                }));
+
+                return leaveRequestsWithNames;
+            }
+
             return data || [];
         },
-        refetchInterval: 30000, // Refresh every 30 seconds
+        refetchInterval: 3000, // Refresh every 3 seconds
     });
 
     // Update leave status mutation
     const updateLeaveStatus = useMutation({
         mutationFn: async ({ id, status, adminNotes }) => {
-            const { error } = await supabase
+            // First get the leave request details
+            const { data: leaveRequest, error: fetchError } = await supabase
+                .from('leave_requests')
+                .select('*')
+                .eq('id', id)
+                .single();
+
+            if (fetchError) throw fetchError;
+
+            // Update the leave request status
+            const { error: updateError } = await supabase
                 .from('leave_requests')
                 .update({
                     status,
@@ -106,10 +171,65 @@ export default function AdminDashboard() {
                     updated_at: new Date().toISOString()
                 })
                 .eq('id', id);
-            if (error) throw error;
+
+            if (updateError) throw updateError;
+
+            // If approved, create shift records for each leave day
+            if (status === 'approved') {
+                const leaveDays = [];
+                const fromDate = new Date(leaveRequest.from_date);
+                const toDate = new Date(leaveRequest.to_date);
+
+                for (let date = new Date(fromDate); date <= toDate; date.setDate(date.getDate() + 1)) {
+                    leaveDays.push(new Date(date));
+                }
+
+                // Create shift records for each leave day
+                const shiftRecords = leaveDays.map(date => {
+                    let entryTime, leaveTime, leaveType;
+
+                    // Handle half-day vs full-day leaves
+                    if (leaveRequest.leave_duration === 'half_day_morning') {
+                        // Half-day morning: 00:00 to 12:00 (4 hours)
+                        entryTime = date.toISOString().split('T')[0] + 'T00:00:00';
+                        leaveTime = date.toISOString().split('T')[0] + 'T12:00:00';
+                        leaveType = leaveRequest.leave_type + '_HALF_MORNING';
+                    } else if (leaveRequest.leave_duration === 'half_day_afternoon') {
+                        // Half-day afternoon: 12:00 to 16:00 (4 hours)
+                        entryTime = date.toISOString().split('T')[0] + 'T12:00:00';
+                        leaveTime = date.toISOString().split('T')[0] + 'T16:00:00';
+                        leaveType = leaveRequest.leave_type + '_HALF_AFTERNOON';
+                    } else {
+                        // Full day: 00:00 to 08:00 (8 hours)
+                        entryTime = date.toISOString().split('T')[0] + 'T00:00:00';
+                        leaveTime = date.toISOString().split('T')[0] + 'T08:00:00';
+                        leaveType = leaveRequest.leave_type;
+                    }
+
+                    return {
+                        worker_id: leaveRequest.employee_id,
+                        work_date: date.toISOString().split('T')[0],
+                        entry_time: entryTime,
+                        leave_time: leaveTime,
+                        has_left: false, // Mark as leave, not actual shift
+                        leave_type: leaveType,
+                        site_id: null // No site for leave days
+                    };
+                });
+
+                const { error: shiftError } = await supabase
+                    .from('shifts')
+                    .insert(shiftRecords);
+
+                if (shiftError) {
+                    console.error('Error creating leave shifts:', shiftError);
+                    // Don't throw here, leave request was already approved
+                }
+            }
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
+            queryClient.invalidateQueries({ queryKey: ['shifts'] });
             toast.success('Leave request updated successfully');
         },
     });
@@ -331,6 +451,7 @@ export default function AdminDashboard() {
             const { data, error } = await supabase
                 .from('shifts')
                 .select('*')
+                .is('leave_type', null) // Exclude leave shifts from time tracker
                 .order('created_at', { ascending: false })
                 .limit(1000);
 
@@ -347,11 +468,11 @@ export default function AdminDashboard() {
                 const siteIds = [...new Set(data.map(shift => shift.site_id))];
 
                 console.log('👥 Fetching workers for IDs:', workerIds);
-                // Fetch workers
+                // Fetch workers from consolidated worker_details table
                 const { data: workers, error: workersError } = await supabase
-                    .from('workers')
-                    .select('worker_id, name')
-                    .in('worker_id', workerIds);
+                    .from('worker_details')
+                    .select('employee_id, employee_name')
+                    .in('employee_id', workerIds);
 
                 if (workersError) console.error('❌ Workers fetch error:', workersError);
 
@@ -448,22 +569,8 @@ export default function AdminDashboard() {
     // Worker mutations
     const addWorkerMutation = useMutation({
         mutationFn: async (workerData) => {
-            // Store password as plain text (for simplicity)
-            const plainPassword = workerData.password;
-
-            // Insert into workers table
-            const { error: workersError } = await supabase
-                .from('workers')
-                .insert([{
-                    worker_id: workerData.employee_id,
-                    name: workerData.employee_name,
-                    password_hash: plainPassword  // Plain text password
-                }]);
-
-            if (workersError) throw workersError;
-
-            // Insert into worker_details table
-            const { error: detailsError } = await supabase
+            // Insert into consolidated worker_details table
+            const { error } = await supabase
                 .from('worker_details')
                 .insert([{
                     employee_id: workerData.employee_id,
@@ -474,17 +581,11 @@ export default function AdminDashboard() {
                     bank_account_number: workerData.bank_account_number,
                     ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
                     sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
-                    basic_salary_per_day: parseFloat(workerData.basic_salary_per_day)
+                    basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
+                    password_hash: workerData.password
                 }]);
 
-            if (detailsError) {
-                // If worker_details insertion fails, clean up the workers record
-                await supabase
-                    .from('workers')
-                    .delete()
-                    .eq('worker_id', workerData.employee_id);
-                throw detailsError;
-            }
+            if (error) throw error;
         },
         onSuccess: () => {
             toast.success('Worker added successfully');
@@ -656,7 +757,7 @@ export default function AdminDashboard() {
         } else {
             // Regular search: worker name or site name
             matchesSearch =
-                s.workers?.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                s.workers?.employee_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                 s.worker_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                 s.sites?.site_name?.toLowerCase().includes(searchTerm.toLowerCase());
         }
@@ -690,12 +791,12 @@ export default function AdminDashboard() {
     const exportToExcel = () => {
         const data = filteredShifts.map(s => ({
             'Date': s.work_date,
-            'Worker Name': s.workers?.name || 'Unknown',
+                'Worker Name': s.workers?.employee_name || 'Unknown',
             'Worker ID': s.worker_id,
             'Site': s.sites?.site_name || 'Unknown',
             'Entry Time': s.entry_time ? formatTime(s.entry_time) : '',
-            'Lunch Start': s.lunch_start ? formatTime(s.lunch_start) : '',
-            'Lunch End': s.lunch_end ? formatTime(s.lunch_end) : '',
+            'Break Start': s.lunch_start ? formatTime(s.lunch_start) : '',
+            'Break End': s.lunch_end ? formatTime(s.lunch_end) : '',
             'Leave Time': s.leave_time ? formatTime(s.leave_time) : '',
             'Worked Hours': s.worked_hours || 0,
             'Sunday Hours': s.sunday_hours || 0,
@@ -726,38 +827,61 @@ export default function AdminDashboard() {
     };
 
     const printTimesheetAndPayslip = async (workerId, month, year) => {
-        // Get all shifts for the worker in the specified month
-        const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-        const endDate = new Date(year, month, 0).toISOString().split('T')[0];
+        try {
+            // Get all shifts for the worker in the specified month
+            const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+            const endDate = new Date(year, month, 0).toISOString().split('T')[0];
 
-        const { data: workerShifts, error } = await supabase
-            .from('shifts')
-            .select('*')
-            .eq('worker_id', workerId)
-            .gte('work_date', startDate)
-            .lte('work_date', endDate)
-            .order('work_date', { ascending: true });
+            console.log('Fetching shifts for worker:', workerId, 'month:', month, 'year:', year);
+            console.log('Date range:', startDate, 'to', endDate);
 
-        if (error) throw error;
+            const { data: workerShifts, error } = await supabase
+                .from('shifts')
+                .select('*')
+                .eq('worker_id', workerId)
+                .gte('work_date', startDate)
+                .lte('work_date', endDate)
+                .order('work_date', { ascending: true });
 
-        // Get worker details for payslip
-        const { data: workerDetails, error: workerError } = await supabase
-            .from('worker_details')
-            .select('*')
-            .eq('employee_id', workerId)
-            .single();
+            if (error) {
+                console.error('Error fetching shifts:', error);
+                throw error;
+            }
 
-        if (workerError) throw workerError;
+            console.log('Found shifts:', workerShifts?.length || 0);
 
-        // Get working days for the month
-        const { data: workingDaysData, error: workingDaysError } = await supabase
-            .from('working_days_config')
-            .select('working_days')
-            .eq('year', year)
-            .eq('month', month)
-            .single();
+            // Get worker details for payslip
+            const { data: workerDetails, error: workerError } = await supabase
+                .from('worker_details')
+                .select('*')
+                .eq('employee_id', workerId)
+                .single();
 
-        if (workingDaysError) throw workingDaysError;
+            if (workerError) {
+                console.error('Error fetching worker details:', workerError);
+                throw workerError;
+            }
+
+            console.log('Worker details:', workerDetails);
+
+            // Get working days for the month
+            let workingDaysData;
+            const { data: workingDaysDataResult, error: workingDaysError } = await supabase
+                .from('working_days_config')
+                .select('working_days')
+                .eq('year', year)
+                .eq('month', month)
+                .single();
+
+            if (workingDaysError) {
+                console.error('Error fetching working days:', workingDaysError);
+                // Use default of 22 working days if not configured
+                workingDaysData = { working_days: 22 };
+            } else {
+                workingDaysData = workingDaysDataResult;
+            }
+
+            console.log('Working days:', workingDaysData.working_days);
 
         // If we have shifts, fetch related data separately
         if (workerShifts && workerShifts.length > 0) {
@@ -765,9 +889,9 @@ export default function AdminDashboard() {
 
             // Fetch workers (we only need the name for the header)
             const { data: workers } = await supabase
-                .from('workers')
-                .select('worker_id, name')
-                .eq('worker_id', workerId)
+                .from('worker_details')
+                .select('employee_id, employee_name')
+                .eq('employee_id', workerId)
                 .single();
 
             // Fetch sites
@@ -783,25 +907,33 @@ export default function AdminDashboard() {
             });
         }
 
-        const workerName = workerShifts[0]?.workers?.name || 'Unknown Worker';
+        const workerName = workerShifts[0]?.workers?.employee_name || 'Unknown Worker';
 
-        // Calculate totals for both timesheet and payslip
-        let totalBasicHours = 0;
-        let totalSundayHours = 0;
-        let totalOtHours = 0;
+        // Calculate monthly totals for payslip using recalculated values
+        let monthlyBasicHours = 0;
+        let monthlySundayHours = 0;
+        let monthlyOtHours = 0;
 
         workerShifts.forEach(shift => {
             if (shift.has_left) {
-                totalBasicHours += shift.worked_hours || 0;
-                totalSundayHours += shift.sunday_hours || 0;
-                totalOtHours += shift.ot_hours || 0;
+                // Recalculate hours using the new logic
+                const recalc = calculateShiftHours(
+                    shift.entry_time,
+                    shift.leave_time,
+                    shift.lunch_start,
+                    shift.lunch_end,
+                    shift.work_date
+                );
+                monthlyBasicHours += recalc.basicHours;
+                monthlySundayHours += recalc.sundayHours;
+                monthlyOtHours += recalc.otHours;
             }
         });
 
-        const totalWorkedHours = totalBasicHours + totalOtHours;
-        const totalSunPhHours = totalSundayHours;
-        const totalBasicDays = totalBasicHours / 8;
-        const totalSunPhDays = totalSundayHours / 8;
+        const totalWorkedHours = monthlyBasicHours + monthlyOtHours + monthlySundayHours;
+        const totalSunPhHours = monthlySundayHours;
+        const totalBasicDays = monthlyBasicHours / 8;
+        const totalSunPhDays = monthlySundayHours / 8;
 
         // Calculate payslip values (stored value is MONTHLY salary, not daily)
         const monthlyBasicSalary = workerDetails.basic_salary_per_day; // This is actually monthly salary
@@ -810,8 +942,8 @@ export default function AdminDashboard() {
 
         // OT CAP LOGIC: Maximum 72 hours payable as regular OT per month
         const maxPayableOtHours = 72;
-        const payableOtHours = Math.min(totalOtHours, maxPayableOtHours);
-        const excessOtHours = Math.max(totalOtHours - maxPayableOtHours, 0);
+        const payableOtHours = Math.min(monthlyOtHours, maxPayableOtHours);
+        const excessOtHours = Math.max(monthlyOtHours - maxPayableOtHours, 0);
 
         const otPay = payableOtHours * workerDetails.ot_rate_per_hour;
         const allowance2 = excessOtHours * workerDetails.ot_rate_per_hour; // Excess OT paid as Allowance 2
@@ -829,63 +961,67 @@ export default function AdminDashboard() {
                     <style>
                         body {
                             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                            padding: 15px;
+                            padding: 20px;
                             background: white;
                             color: #333;
-                            line-height: 1.3;
-                            font-size: 11px;
+                            line-height: 1.4;
+                            font-size: 14px;
                         }
                         .header {
                             text-align: center;
-                            margin-bottom: 15px;
-                            border-bottom: 2px solid #333;
-                            padding-bottom: 10px;
+                            margin-bottom: 20px;
+                            border-bottom: 3px solid #333;
+                            padding-bottom: 15px;
                         }
                         .company-name {
                             font-family: 'Calibri', 'Segoe UI', sans-serif;
                             font-weight: 700;
-                            font-size: 18px;
+                            font-size: 24px;
                             margin: 0;
                             color: #b22222;
                         }
                         .company-address {
                             font-family: 'Aptos Narrow', 'Segoe UI', sans-serif;
-                            font-size: 10px;
-                            margin: 5px 0 0 0;
+                            font-size: 12px;
+                            margin: 8px 0 0 0;
                             color: #666;
                         }
                         .worker-info {
-                            margin: 10px 0;
-                            padding: 8px;
+                            margin: 15px 0;
+                            padding: 15px;
                             background: #f8f9fa;
-                            border-radius: 5px;
-                            font-size: 10px;
+                            border: 2px solid #dee2e6;
+                            border-radius: 8px;
+                            font-size: 12px;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
                         }
                         .worker-info-grid {
                             display: grid;
                             grid-template-columns: 1fr 1fr;
-                            gap: 10px;
+                            gap: 15px;
                         }
                         .worker-info div {
-                            margin-bottom: 4px;
+                            margin-bottom: 6px;
                         }
                         table {
                             width: 100%;
                             border-collapse: collapse;
-                            margin: 10px 0;
+                            margin: 15px 0;
                             background: white;
-                            border: 1px solid #dee2e6;
-                            font-size: 9px;
+                            border: 2px solid #dee2e6;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                            font-size: 11px;
                         }
                         th, td {
                             border: 1px solid #dee2e6;
-                            padding: 4px 6px;
+                            padding: 8px 10px;
                             text-align: center;
                         }
                         th {
                             background: #f8f9fa;
-                            font-weight: 600;
-                            font-size: 9px;
+                            font-weight: 700;
+                            font-size: 11px;
+                            border-bottom: 2px solid #dee2e6;
                         }
                         .sunday-row {
                             background: #ffcccc !important;
@@ -898,52 +1034,59 @@ export default function AdminDashboard() {
                             font-weight: bold;
                         }
                         .totals {
-                            margin-top: 15px;
-                            padding: 10px;
+                            margin-top: 20px;
+                            padding: 15px;
                             background: #f8f9fa;
-                            border-radius: 5px;
-                            font-size: 10px;
+                            border: 2px solid #dee2e6;
+                            border-radius: 8px;
+                            font-size: 12px;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
                         }
                         .salary-breakdown {
-                            margin: 15px 0;
-                            border: 1px solid #dee2e6;
-                            border-radius: 5px;
+                            margin: 20px 0;
+                            border: 2px solid #dee2e6;
+                            border-radius: 8px;
                             overflow: hidden;
+                            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
                         }
                         .salary-header {
                             background: #f8f9fa;
-                            padding: 8px;
-                            font-weight: 600;
-                            border-bottom: 1px solid #dee2e6;
+                            padding: 12px;
+                            font-weight: 700;
+                            border-bottom: 2px solid #dee2e6;
+                            font-size: 14px;
                         }
                         .salary-row {
                             display: flex;
-                            padding: 6px 8px;
+                            padding: 10px 12px;
                             border-bottom: 1px solid #dee2e6;
+                            font-size: 12px;
                         }
                         .salary-row:last-child {
                             border-bottom: none;
                             background: #f8f9fa;
-                            font-weight: 600;
+                            font-weight: 700;
+                            font-size: 14px;
                         }
                         .salary-label {
                             flex: 1;
-                            font-weight: 500;
+                            font-weight: 600;
                         }
                         .salary-amount {
                             text-align: right;
-                            min-width: 80px;
+                            min-width: 100px;
+                            font-weight: 700;
                         }
                         .signature-section {
-                            margin-top: 20px;
+                            margin-top: 30px;
                             display: flex;
                             justify-content: space-between;
                         }
                         .signature-line {
-                            border-bottom: 1px solid #333;
-                            width: 150px;
-                            height: 30px;
-                            margin-top: 20px;
+                            border-bottom: 2px solid #333;
+                            width: 180px;
+                            height: 40px;
+                            margin-top: 25px;
                         }
                         .no-data {
                             color: #666;
@@ -955,52 +1098,52 @@ export default function AdminDashboard() {
                         @media print {
                             body {
                                 background: white !important;
-                                padding: 10px !important;
+                                padding: 15px !important;
                                 margin: 0 !important;
-                                font-size: 10px !important;
+                                font-size: 12px !important;
                             }
                             .header {
-                                margin-bottom: 10px !important;
-                                padding-bottom: 8px !important;
+                                margin-bottom: 15px !important;
+                                padding-bottom: 12px !important;
                             }
                             .company-name {
-                                font-size: 16px !important;
+                                font-size: 20px !important;
                             }
                             .company-address {
-                                font-size: 9px !important;
+                                font-size: 11px !important;
                             }
                             table {
-                                font-size: 8px !important;
+                                font-size: 10px !important;
                             }
                             th, td {
-                                padding: 3px 4px !important;
+                                padding: 6px 8px !important;
                             }
                             .worker-info, .worker-info-grid {
-                                margin: 8px 0 !important;
-                                padding: 6px !important;
-                                font-size: 9px !important;
+                                margin: 12px 0 !important;
+                                padding: 12px !important;
+                                font-size: 11px !important;
                             }
                             .totals, .salary-breakdown {
-                                margin: 10px 0 !important;
+                                margin: 15px 0 !important;
                             }
                             .salary-header {
-                                padding: 6px !important;
-                                font-size: 9px !important;
+                                padding: 10px !important;
+                                font-size: 12px !important;
                             }
                             .salary-row {
-                                padding: 4px 6px !important;
-                                font-size: 9px !important;
+                                padding: 8px 10px !important;
+                                font-size: 11px !important;
                             }
                             .signature-section {
-                                margin-top: 15px !important;
+                                margin-top: 25px !important;
                             }
                             .signature-line {
-                                width: 120px !important;
-                                height: 25px !important;
-                                margin-top: 15px !important;
+                                width: 150px !important;
+                                height: 35px !important;
+                                margin-top: 20px !important;
                             }
                             @page {
-                                size: A4;
+                                size: A4 portrait;
                                 margin: 0.5in;
                             }
                         }
@@ -1026,7 +1169,7 @@ export default function AdminDashboard() {
                                 <th>Date</th>
                                 <th>Entry</th>
                                 <th>Leave</th>
-                                <th>Lunch</th>
+                                <th>Break</th>
                                 <th>OT Hours</th>
                                 <th>Basic Hours</th>
                                 <th>Sun/PH Hours</th>
@@ -1059,18 +1202,27 @@ export default function AdminDashboard() {
             const isSundayDay = isSunday(date);
             const isHolidayDay = isPublicHoliday(date);
 
-            // Sum all shifts for this day
+            // Sum all shifts for this day - recalculate using new logic
             let totalBasicHours = 0;
             let totalSundayHours = 0;
             let totalOtHours = 0;
             let shiftDetails = [];
+            let leaveType = null;
 
             dayShifts.forEach(shift => {
-                totalBasicHours += shift.worked_hours || 0;
-                totalSundayHours += shift.sunday_hours || 0;
-                totalOtHours += shift.ot_hours || 0;
-
                 if (shift.has_left) {
+                    // Recalculate hours using the new logic
+                    const recalc = calculateShiftHours(
+                        shift.entry_time,
+                        shift.leave_time,
+                        shift.lunch_start,
+                        shift.lunch_end,
+                        shift.work_date
+                    );
+                    totalBasicHours += recalc.basicHours;
+                    totalSundayHours += recalc.sundayHours;
+                    totalOtHours += recalc.otHours;
+
                     shiftDetails.push({
                         entry: shift.entry_time ? formatTime(shift.entry_time) : '',
                         leave: shift.leave_time ? formatTime(shift.leave_time) : '',
@@ -1079,6 +1231,28 @@ export default function AdminDashboard() {
                             : '',
                         site: shift.sites?.site_name || ''
                     });
+                } else if (shift.leave_type) {
+                    // This is a leave day - handle half-day and full-day leaves
+                    if (shift.leave_type === 'AL' || shift.leave_type === 'MC') {
+                        // Full-day paid leave - counts as 8 basic hours
+                        leaveType = shift.leave_type;
+                        totalBasicHours = 8;
+                        totalOtHours = 0;
+                        totalSundayHours = 0;
+                    } else if (shift.leave_type.includes('_HALF_')) {
+                        // Half-day leave - counts as 4 basic hours
+                        const baseType = shift.leave_type.split('_')[0]; // AL or MC
+                        leaveType = baseType + ' (0.5)'; // Show as "AL (0.5)" or "MC (0.5)"
+                        totalBasicHours = 4; // Half day = 4 hours
+                        totalOtHours = 0;
+                        totalSundayHours = 0;
+                    } else if (shift.leave_type === 'UNPAID_LEAVE') {
+                        // Unpaid leave - 0 hours
+                        leaveType = 'UNPAID';
+                        totalBasicHours = 0;
+                        totalOtHours = 0;
+                        totalSundayHours = 0;
+                    }
                 }
             });
 
@@ -1097,14 +1271,14 @@ export default function AdminDashboard() {
                     <td>${day}/${String(month).padStart(2, '0')}/${year}</td>
                     <td>${entryTimes}</td>
                     <td>${leaveTimes}</td>
-                    <td>${lunchTimes}</td>
+                <td>${lunchTimes}</td>
                     <td>${totalOtHours.toFixed(2)}</td>
                     <td>${totalBasicHours.toFixed(2)}</td>
                     <td>${totalSundayHours.toFixed(2)}</td>
                     <td>${totalWorkedHours.toFixed(2)}</td>
                     <td>${basicDays.toFixed(2)}</td>
                     <td>${sundayDays.toFixed(2)}</td>
-                    <td></td>
+                    <td>${leaveType || ''}</td>
                     <td>${siteNames}</td>
                 </tr>
             `);
@@ -1116,8 +1290,8 @@ export default function AdminDashboard() {
 
                     <div class="totals">
                         <h3>Monthly Summary</h3>
-                        <p><strong>Basic Hours:</strong> ${totalBasicHours.toFixed(2)}</p>
-                        <p><strong>OT Hours:</strong> ${totalOtHours.toFixed(2)}</p>
+                        <p><strong>Basic Hours:</strong> ${monthlyBasicHours.toFixed(2)}</p>
+                        <p><strong>OT Hours:</strong> ${monthlyOtHours.toFixed(2)}</p>
                         <p><strong>Total Worked Hours:</strong> ${totalWorkedHours.toFixed(2)}</p>
                         <p><strong>Total Sun/PH Hours:</strong> ${totalSunPhHours.toFixed(2)}</p>
                         <p><strong>Basic Days:</strong> ${totalBasicDays.toFixed(2)}</p>
@@ -1166,8 +1340,8 @@ export default function AdminDashboard() {
                         <div class="salary-header">Salary Breakdown</div>
 
                         <div class="salary-row">
-                            <div class="salary-label">Basic Pay</div>
-                            <div class="salary-amount">$${basicPay.toFixed(2)}</div>
+                            <div class="salary-label">OT Pay</div>
+                            <div class="salary-amount">$${payableOtHours.toFixed(2)}</div>
                         </div>
 
                         <div class="salary-row">
@@ -1243,6 +1417,10 @@ export default function AdminDashboard() {
         `);
         printWindow.document.close();
         printWindow.print();
+        } catch (error) {
+            console.error('Error generating print:', error);
+            alert('Error generating print: ' + error.message);
+        }
     };
 
     const printPayslip = async (workerId, month, year, salaryPaidDate) => {
@@ -1614,9 +1792,17 @@ export default function AdminDashboard() {
                             <Clock className="w-4 h-4" />
                             Time Tracker
                         </TabsTrigger>
-                        <TabsTrigger value="leaves" className="flex items-center gap-2">
+                        <TabsTrigger value="leaves" className="flex items-center gap-2 relative">
                             <Calendar className="w-4 h-4" />
                             Leaves
+                            {leaveRequests && leaveRequests.length > 0 && (
+                                <Badge
+                                    variant="destructive"
+                                    className="absolute -top-2 -right-2 h-5 w-5 flex items-center justify-center text-xs p-0"
+                                >
+                                    {leaveRequests.length}
+                                </Badge>
+                            )}
                         </TabsTrigger>
                         <TabsTrigger value="salary-report" className="flex items-center gap-2">
                             <DollarSign className="w-4 h-4" />
@@ -1745,7 +1931,7 @@ export default function AdminDashboard() {
                                                     transition={{ delay: index * 0.05 }}
                                                 >
                                                     <Card className={`border-0 shadow-md hover:shadow-lg transition-shadow overflow-hidden ${
-                                                        isSundayShift || isHolidayShift ? 'bg-red-50 border-red-200' : ''
+                                                        isSundayShift || isHolidayShift ? 'bg-red-200 border-red-400' : 'bg-white'
                                                     }`}>
                                                         <div className={`h-1 ${isSundayShift || isHolidayShift ? 'bg-red-600' : 'bg-[#dc6b2f]'}`} />
                                                         <CardContent className="p-5">
@@ -1813,7 +1999,7 @@ export default function AdminDashboard() {
                                                                         </div>
                                                                         <div className="flex items-center gap-2 text-slate-700">
                                                                             <User className="w-4 h-4 text-slate-400" />
-                                                                            <span className="font-medium">{shift.workers?.name}</span>
+                                                                            <span className="font-medium">{shift.workers?.employee_name}</span>
                                                                             <span className="text-slate-400">•</span>
                                                                             <span className="text-sm text-slate-500">ID: {shift.worker_id}</span>
                                                                         </div>
@@ -1825,27 +2011,37 @@ export default function AdminDashboard() {
                                                                             )}
                                                                             {shift.leave_time && (
                                                                                 <span className="text-slate-600">
-                                                                                    Leave: {formatTime(shift.leave_time)}
+                                                                                    Exit: {formatTime(shift.leave_time)}
                                                                                 </span>
                                                                             )}
                                                                         </div>
-                                                                        {shift.has_left && (
-                                                                            <div className="flex items-center gap-4 text-sm">
-                                                                                <span className="text-green-600 font-medium">
-                                                                                    Worked: {shift.worked_hours?.toFixed(2)}h
-                                                                                </span>
-                                                                                {shift.sunday_hours > 0 && (
-                                                                                    <span className="text-orange-600 font-medium">
-                                                                                        Sunday: {shift.sunday_hours?.toFixed(2)}h
+                                                                        {shift.has_left && (() => {
+                                                                            // Recalculate hours using the new logic for display
+                                                                            const recalc = calculateShiftHours(
+                                                                                shift.entry_time,
+                                                                                shift.leave_time,
+                                                                                shift.lunch_start,
+                                                                                shift.lunch_end,
+                                                                                shift.work_date
+                                                                            );
+                                                                            return (
+                                                                                <div className="flex items-center gap-4 text-sm">
+                                                                                    <span className="text-green-600 font-medium">
+                                                                                        Basic: {recalc.basicHours.toFixed(2)}h
                                                                                     </span>
-                                                                                )}
-                                                                                {shift.ot_hours > 0 && (
-                                                                                    <span className="text-blue-600 font-medium">
-                                                                                        OT: {shift.ot_hours?.toFixed(2)}h
-                                                                                    </span>
-                                                                                )}
-                                                                            </div>
-                                                                        )}
+                                                                                    {recalc.sundayHours > 0 && (
+                                                                                        <span className="text-orange-600 font-medium">
+                                                                                            Sun/PH: {recalc.sundayHours.toFixed(2)}h
+                                                                                        </span>
+                                                                                    )}
+                                                                                    {recalc.otHours > 0 && (
+                                                                                        <span className="text-blue-600 font-medium">
+                                                                                            OT: {recalc.otHours.toFixed(2)}h
+                                                                                        </span>
+                                                                                    )}
+                                                                                </div>
+                                                                            );
+                                                                        })()}
                                                                     </div>
                                                                 </div>
                                                             </div>
@@ -1873,16 +2069,27 @@ export default function AdminDashboard() {
                                                                                 <p>Leave: {shift.leave_time ? formatTime(shift.leave_time) : 'Not recorded'}</p>
                                                                             </div>
                                                                         </div>
-                                                                        {shift.has_left && (
-                                                                            <div>
-                                                                                <h4 className="font-medium text-slate-700 mb-2">Hours Breakdown</h4>
-                                                                                <div className="space-y-1">
-                                                                                    <p>Regular Hours: {shift.worked_hours?.toFixed(2) || 0}</p>
-                                                                                    <p>Sunday Hours: {shift.sunday_hours?.toFixed(2) || 0}</p>
-                                                                                    <p>OT Hours: {shift.ot_hours?.toFixed(2) || 0}</p>
+                                                                        {shift.has_left && (() => {
+                                                                            // Recalculate hours using the new logic for expanded details
+                                                                            const recalc = calculateShiftHours(
+                                                                                shift.entry_time,
+                                                                                shift.leave_time,
+                                                                                shift.lunch_start,
+                                                                                shift.lunch_end,
+                                                                                shift.work_date
+                                                                            );
+                                                                            return (
+                                                                                <div>
+                                                                                    <h4 className="font-medium text-slate-700 mb-2">Hours Breakdown</h4>
+                                                                                    <div className="space-y-1">
+                                                                                        <p>Basic Hours: {recalc.basicHours.toFixed(2)}</p>
+                                                                                        <p>Sun/PH Hours: {recalc.sundayHours.toFixed(2)}</p>
+                                                                                        <p>OT Hours: {recalc.otHours.toFixed(2)}</p>
+                                                                                        <p>Total Hours: {(recalc.basicHours + recalc.sundayHours + recalc.otHours).toFixed(2)}</p>
+                                                                                    </div>
                                                                                 </div>
-                                                                            </div>
-                                                                        )}
+                                                                            );
+                                                                        })()}
                                                                     </div>
                                                                 </div>
                                                             )}
@@ -1905,9 +2112,19 @@ export default function AdminDashboard() {
                                     <div className="flex items-center gap-3 mb-6">
                                         <Calendar className="w-6 h-6 text-slate-600" />
                                         <h3 className="text-xl font-semibold text-slate-700">Leave Requests</h3>
-                                        <Badge variant="outline" className="ml-auto">
-                                            {leaveRequests?.length || 0} Pending
-                                        </Badge>
+                                        <div className="ml-auto flex gap-2">
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => setShowLeaveHistory(true)}
+                                            >
+                                                <Calendar className="w-4 h-4 mr-2" />
+                                                History
+                                            </Button>
+                                            <Badge variant="outline">
+                                                {leaveRequests?.length || 0} Pending
+                                            </Badge>
+                                        </div>
                                     </div>
 
                                     {isLoadingLeaveRequests ? (
@@ -2548,6 +2765,97 @@ export default function AdminDashboard() {
                             ) : (
                                 'Delete Worker'
                             )}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Leave History Dialog */}
+            <Dialog open={showLeaveHistory} onOpenChange={setShowLeaveHistory}>
+                <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle>Leave History</DialogTitle>
+                        <DialogDescription>
+                            Complete history of all leave requests (approved, rejected, pending)
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {isLoadingAllLeaveRequests ? (
+                        <div className="flex items-center justify-center py-10">
+                            <Loader2 className="w-8 h-8 animate-spin text-slate-700" />
+                        </div>
+                    ) : allLeaveRequests?.length === 0 ? (
+                        <div className="text-center py-10">
+                            <Calendar className="w-16 h-16 mx-auto text-slate-300 mb-4" />
+                            <h4 className="text-lg font-medium text-slate-700 mb-2">No Leave History</h4>
+                            <p className="text-slate-500">No leave requests have been submitted yet</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
+                            {allLeaveRequests?.map((request) => (
+                                <Card key={request.id} className={`border ${
+                                    request.status === 'approved' ? 'border-green-200 bg-green-50' :
+                                    request.status === 'rejected' ? 'border-red-200 bg-red-50' :
+                                    'border-yellow-200 bg-yellow-50'
+                                }`}>
+                                    <CardContent className="p-4">
+                                        <div className="flex items-start justify-between mb-3">
+                                            <div className="flex items-center gap-3">
+                                                <Badge
+                                                    variant={request.status === 'approved' ? 'default' : request.status === 'rejected' ? 'destructive' : 'secondary'}
+                                                    className={
+                                                        request.status === 'approved' ? 'bg-green-100 text-green-800' :
+                                                        request.status === 'rejected' ? 'bg-red-100 text-red-800' :
+                                                        'bg-yellow-100 text-yellow-800'
+                                                    }
+                                                >
+                                                    {request.status.toUpperCase()}
+                                                </Badge>
+                                                <Badge
+                                                    variant={request.leave_type === 'AL' ? 'default' : 'secondary'}
+                                                    className={request.leave_type === 'AL' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}
+                                                >
+                                                    {request.leave_type}
+                                                </Badge>
+                                                <span className="text-xs text-slate-500">
+                                                    {format(new Date(request.created_at), 'MMM dd, yyyy HH:mm')}
+                                                </span>
+                                            </div>
+                                            <div className="text-right text-xs text-slate-500">
+                                                Days: {request.days_requested || 1}
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-2 mb-4">
+                                            <div className="flex items-center gap-2">
+                                                <User className="w-4 h-4 text-slate-400" />
+                                                <span className="font-medium text-sm">{request.worker_details?.employee_name || request.employee_name || 'Unknown'}</span>
+                                                <span className="text-slate-400">•</span>
+                                                <span className="text-sm text-slate-500">ID: {request.employee_id}</span>
+                                            </div>
+                                            <div className="text-xs text-slate-600">
+                                                <strong>Period:</strong> {formatDate(request.from_date)} - {formatDate(request.to_date)}
+                                            </div>
+                                            {request.reason && (
+                                                <div className="text-xs text-slate-600">
+                                                    <strong>Reason:</strong> {request.reason}
+                                                </div>
+                                            )}
+                                            {request.admin_notes && (
+                                                <div className="text-xs text-slate-600">
+                                                    <strong>Admin Notes:</strong> {request.admin_notes}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            ))}
+                        </div>
+                    )}
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowLeaveHistory(false)}>
+                            Close
                         </Button>
                     </DialogFooter>
                 </DialogContent>

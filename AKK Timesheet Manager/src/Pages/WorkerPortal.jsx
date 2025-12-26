@@ -15,7 +15,7 @@ import {
 } from "@/Components/ui/dialog";
 import {
     Clock, LogIn, Coffee, LogOut, History, ArrowLeft,
-    MapPin, Calendar, User, CheckCircle, AlertCircle, FileText
+    MapPin, Calendar, User, CheckCircle, AlertCircle, FileText, Loader2
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
@@ -24,15 +24,17 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/supabase";
 import QRScanner from "@/Components/QRScanner";
 import { formatTime, formatDate, calculateShiftHours } from "@/lib/timeUtils";
+import { format } from "date-fns";
 import { toast } from "sonner";
 
 export default function WorkerPortal() {
-    const [activeScan, setActiveScan] = useState(null); // 'entry', 'lunch', 'leave'
+    const [activeScan, setActiveScan] = useState(null); // 'entry', 'breaks', 'leave'
     const [currentShift, setCurrentShift] = useState(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [showLeaveRequestDialog, setShowLeaveRequestDialog] = useState(false);
     const [leaveRequestData, setLeaveRequestData] = useState({
         leave_type: '',
+        leave_duration: 'full_day',
         from_date: '',
         to_date: '',
         reason: ''
@@ -40,6 +42,24 @@ export default function WorkerPortal() {
 
     const workerId = sessionStorage.getItem('workerId');
     const workerName = sessionStorage.getItem('workerName');
+
+    // Fetch worker's leave history
+    const { data: workerLeaveRequests = [], isLoading: isLoadingLeaveHistory } = useQuery({
+        queryKey: ['workerLeaveHistory', workerId],
+        queryFn: async () => {
+            if (!workerId) return [];
+
+            const { data, error } = await supabase
+                .from('leave_requests')
+                .select('*')
+                .eq('employee_id', workerId)
+                .order('created_at', { ascending: false });
+
+            if (error) throw error;
+            return data || [];
+        },
+        enabled: !!workerId
+    });
 
     // Check authentication on component mount
     useEffect(() => {
@@ -49,52 +69,57 @@ export default function WorkerPortal() {
         }
     }, []);
 
-    // Fetch current shift (today's shift)
-    const { data: todaysShift, refetch: refetchShift, isLoading: isLoadingShift } = useQuery({
+    // Fetch current shift (today's shifts)
+    const { data: todaysShifts, refetch: refetchShift, isLoading: isLoadingShift } = useQuery({
         queryKey: ['currentShift', workerId],
         queryFn: async () => {
-            if (!workerId) return null;
+            if (!workerId) return [];
 
             const today = new Date().toISOString().split('T')[0];
-            console.log('Fetching todays shift for worker:', workerId, 'date:', today);
+            console.log('Fetching todays shifts for worker:', workerId, 'date:', today);
 
             const { data, error } = await supabase
                 .from('shifts')
                 .select('*')
                 .eq('worker_id', workerId)
                 .eq('work_date', today)
-                .single();
+                .order('created_at', { ascending: false });
 
-            // If we have a shift, fetch site data separately
-            if (data) {
-                const { data: siteData } = await supabase
-                    .from('sites')
-                    .select('id, site_name, latitude, longitude')
-                    .eq('id', data.site_id)
-                    .single();
-
-                if (siteData) {
-                    data.sites = siteData;
-                }
-            }
-
-            if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
-                console.error('Error fetching todays shift:', error);
+            if (error) {
+                console.error('Error fetching todays shifts:', error);
                 throw error;
             }
 
-            console.log('Todays shift data:', data);
-            return data || null;
+            // If we have shifts, fetch site data separately for each
+            if (data && data.length > 0) {
+                const siteIds = [...new Set(data.map(shift => shift.site_id))];
+                const { data: sites } = await supabase
+                    .from('sites')
+                    .select('id, site_name, latitude, longitude')
+                    .in('id', siteIds);
+
+                // Merge site data into shifts
+                data.forEach(shift => {
+                    shift.sites = sites?.find(s => s.id === shift.site_id) || null;
+                });
+            }
+
+            console.log('Todays shifts data:', data);
+            return data || [];
         },
         refetchInterval: 5000, // Refresh every 5 seconds
         enabled: !!workerId
     });
 
     useEffect(() => {
-        if (todaysShift) {
-            setCurrentShift(todaysShift);
+        if (todaysShifts && todaysShifts.length > 0) {
+            // Get the most recent active shift (not completed)
+            const activeShift = todaysShifts.find(shift => !shift.has_left) || todaysShifts[0];
+            setCurrentShift(activeShift);
+        } else {
+            setCurrentShift(null);
         }
-    }, [todaysShift]);
+    }, [todaysShifts]);
 
     const handleScanSuccess = async (site, qrToken) => {
         console.log('Scan success - site:', site, 'qrToken:', qrToken, 'action:', activeScan);
@@ -126,45 +151,47 @@ export default function WorkerPortal() {
                 setCurrentShift(data);
                 refetchShift();
 
-            } else if (activeScan === 'lunch') {
+            } else if (activeScan === 'breaks') {
                 if (!currentShift || !currentShift.entry_time) {
                     toast.error("Must clock in first");
                     setIsProcessing(false);
                     return;
                 }
 
-                if (currentShift.lunch_start && !currentShift.lunch_end) {
-                    // End lunch break
+                // Check if there's an ongoing break (break_start without break_end)
+                const { data: ongoingBreak, error: breakCheckError } = await supabase
+                    .from('breaks')
+                    .select('*')
+                    .eq('shift_id', currentShift.id)
+                    .is('break_end', null)
+                    .single();
+
+                if (breakCheckError && breakCheckError.code !== 'PGRST116') {
+                    throw breakCheckError;
+                }
+
+                if (ongoingBreak) {
+                    // End the ongoing break
                     const { error } = await supabase
-                        .from('shifts')
-                        .update({ lunch_end: now })
-                        .eq('id', currentShift.id);
+                        .from('breaks')
+                        .update({ break_end: now })
+                        .eq('id', ongoingBreak.id);
 
                     if (error) throw error;
 
-                    // Update local state immediately
-                    setCurrentShift({
-                        ...currentShift,
-                        lunch_end: now
-                    });
-
-                    toast.success("Lunch break ended!");
+                    toast.success("Break ended!");
                 } else {
-                    // Start lunch break
+                    // Start a new break
                     const { error } = await supabase
-                        .from('shifts')
-                        .update({ lunch_start: now })
-                        .eq('id', currentShift.id);
+                        .from('breaks')
+                        .insert([{
+                            shift_id: currentShift.id,
+                            break_start: now
+                        }]);
 
                     if (error) throw error;
 
-                    // Update local state immediately
-                    setCurrentShift({
-                        ...currentShift,
-                        lunch_start: now
-                    });
-
-                    toast.success("Lunch break started!");
+                    toast.success("Break started!");
                 }
 
                 refetchShift();
@@ -177,12 +204,23 @@ export default function WorkerPortal() {
                     return;
                 }
 
-                // Calculate final hours
+                // Fetch all breaks for this shift
+                const { data: shiftBreaks, error: breaksError } = await supabase
+                    .from('breaks')
+                    .select('*')
+                    .eq('shift_id', currentShift.id)
+                    .order('break_start', { ascending: true });
+
+                if (breaksError) {
+                    console.error('Error fetching breaks:', breaksError);
+                    throw breaksError;
+                }
+
+                // Calculate final hours with breaks
                 const calculations = calculateShiftHours(
                     currentShift.entry_time,
                     now,
-                    currentShift.lunch_start,
-                    currentShift.lunch_end,
+                    shiftBreaks || [], // Pass all breaks
                     today
                 );
 
@@ -190,7 +228,7 @@ export default function WorkerPortal() {
                 console.log('Updating shift:', currentShift.id, 'with data:', {
                     leave_time: now,
                     has_left: true,
-                    worked_hours: calculations.workedHours,
+                    worked_hours: calculations.basicHours,
                     sunday_hours: calculations.sundayHours,
                     ot_hours: calculations.otHours
                 });
@@ -200,7 +238,7 @@ export default function WorkerPortal() {
                     .update({
                         leave_time: now,
                         has_left: true,
-                        worked_hours: calculations.workedHours,
+                        worked_hours: calculations.basicHours,
                         sunday_hours: calculations.sundayHours,
                         ot_hours: calculations.otHours
                     })
@@ -219,12 +257,12 @@ export default function WorkerPortal() {
                     ...currentShift,
                     leave_time: now,
                     has_left: true,
-                    worked_hours: calculations.workedHours,
+                    worked_hours: calculations.basicHours,
                     sunday_hours: calculations.sundayHours,
                     ot_hours: calculations.otHours
                 });
 
-                toast.success(`Clocked out successfully! Worked: ${calculations.workedHours}h, OT: ${calculations.otHours}h, Sunday: ${calculations.sundayHours}h`);
+                toast.success(`Clocked out successfully! Basic: ${calculations.basicHours}h, OT: ${calculations.otHours}h, Sun/PH: ${calculations.sundayHours}h`);
                 refetchShift();
             }
 
@@ -273,20 +311,25 @@ export default function WorkerPortal() {
     // Leave request mutation
     const submitLeaveRequestMutation = useMutation({
         mutationFn: async (leaveData) => {
+            console.log('Submitting leave request:', leaveData);
             const { error } = await supabase
                 .from('leave_requests')
                 .insert([{
                     employee_id: workerId,
-                    employee_name: workerName,
                     leave_type: leaveData.leave_type,
+                    leave_duration: leaveData.leave_duration,
                     from_date: leaveData.from_date,
                     to_date: leaveData.to_date,
                     reason: leaveData.reason,
                     status: 'pending'
                 }]);
-            if (error) throw error;
+            if (error) {
+                console.error('Leave request error:', error);
+                throw error;
+            }
         },
         onSuccess: () => {
+            console.log('Leave request submitted successfully');
             toast.success('Leave request submitted successfully');
             setShowLeaveRequestDialog(false);
             setLeaveRequestData({
@@ -295,6 +338,12 @@ export default function WorkerPortal() {
                 to_date: '',
                 reason: ''
             });
+            // Invalidate admin queries to refresh immediately
+            queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
+        },
+        onError: (error) => {
+            console.error('Leave submission failed:', error);
+            toast.error(`Failed to submit leave request: ${error.message}`);
         },
     });
 
@@ -459,29 +508,29 @@ export default function WorkerPortal() {
                                     </Card>
                                 </motion.div>
 
-                                {/* Lunch Break */}
-                                <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                                    <Card
-                                        onClick={() => setActiveScan('lunch')}
-                                        className={`cursor-pointer border-0 shadow-lg transition-colors ${
-                                            canStartLunch || canEndLunch
-                                                ? 'hover:bg-orange-50'
-                                                : 'opacity-50 cursor-not-allowed'
-                                        }`}
-                                    >
-                                        <CardContent className="p-6 text-center">
-                                            <div className="w-16 h-16 bg-orange-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                                                <Coffee className="w-8 h-8 text-orange-600" />
-                                            </div>
-                                            <h3 className="text-xl font-bold text-slate-800 mb-2">
-                                                {canEndLunch ? 'End Lunch' : 'Start Lunch'}
-                                            </h3>
-                                            <p className="text-slate-600 text-sm">
-                                                {canEndLunch ? 'Resume work' : 'Take lunch break'}
-                                            </p>
-                                        </CardContent>
-                                    </Card>
-                                </motion.div>
+                {/* Breaks */}
+                <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                    <Card
+                        onClick={() => setActiveScan('breaks')}
+                        className={`cursor-pointer border-0 shadow-lg transition-colors ${
+                            currentShift && currentShift.entry_time && !currentShift.has_left
+                                ? 'hover:bg-orange-50'
+                                : 'opacity-50 cursor-not-allowed'
+                        }`}
+                    >
+                        <CardContent className="p-6 text-center">
+                            <div className="w-16 h-16 bg-orange-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                                <Coffee className="w-8 h-8 text-orange-600" />
+                            </div>
+                            <h3 className="text-xl font-bold text-slate-800 mb-2">
+                                Take Break
+                            </h3>
+                            <p className="text-slate-600 text-sm">
+                                Start or end a break
+                            </p>
+                        </CardContent>
+                    </Card>
+                </motion.div>
 
                                 {/* Clock Out */}
                                 <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
@@ -527,6 +576,58 @@ export default function WorkerPortal() {
                                     </Card>
                                 </motion.div>
                             </div>
+
+                            {/* Leave History */}
+                            {workerLeaveRequests.length > 0 && (
+                                <Card className="border-0 shadow-lg">
+                                    <CardHeader>
+                                        <CardTitle className="flex items-center gap-2">
+                                            <Calendar className="w-5 h-5" />
+                                            Leave History
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent>
+                                        {isLoadingLeaveHistory ? (
+                                            <div className="flex items-center justify-center py-6">
+                                                <Loader2 className="w-6 h-6 animate-spin text-slate-500" />
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-3">
+                                                {workerLeaveRequests.slice(0, 5).map((request) => (
+                                                    <div key={request.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                                                        <div className="flex items-center gap-3">
+                                                            <Badge
+                                                                variant={request.status === 'approved' ? 'default' : request.status === 'rejected' ? 'destructive' : 'secondary'}
+                                                                className={
+                                                                    request.status === 'approved' ? 'bg-green-100 text-green-800' :
+                                                                    request.status === 'rejected' ? 'bg-red-100 text-red-800' :
+                                                                    'bg-yellow-100 text-yellow-800'
+                                                                }
+                                                            >
+                                                                {request.status.toUpperCase()}
+                                                            </Badge>
+                                                            <div>
+                                                                <p className="font-medium text-sm">{request.leave_type} Request</p>
+                                                                <p className="text-xs text-slate-500">
+                                                                    {formatDate(request.from_date)} - {formatDate(request.to_date)}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="text-right text-xs text-slate-500">
+                                                            {format(new Date(request.created_at), 'MMM dd, yyyy')}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                                {workerLeaveRequests.length > 5 && (
+                                                    <p className="text-xs text-slate-500 text-center pt-2">
+                                                        Showing 5 most recent requests. Check History page for all requests.
+                                                    </p>
+                                                )}
+                                            </div>
+                                        )}
+                                    </CardContent>
+                                </Card>
+                            )}
                         </motion.div>
                     ) : (
                         <motion.div
@@ -545,12 +646,12 @@ export default function WorkerPortal() {
                                 </div>
                                 <h2 className="text-3xl font-bold text-slate-800 mb-2">
                                     {activeScan === 'entry' && 'Clock In'}
-                                    {activeScan === 'lunch' && (canEndLunch ? 'End Lunch Break' : 'Start Lunch Break')}
+                                    {activeScan === 'breaks' && 'Take Break'}
                                     {activeScan === 'leave' && 'Clock Out'}
                                 </h2>
                                 <p className="text-slate-600 text-lg">
                                     {activeScan === 'entry' && 'Start your work shift by scanning the QR code at your site'}
-                                    {activeScan === 'lunch' && (canEndLunch ? 'Resume work by scanning the QR code' : 'Take a break by scanning the QR code')}
+                                    {activeScan === 'breaks' && 'Start or end a break by scanning the QR code'}
                                     {activeScan === 'leave' && 'End your work shift by scanning the QR code at your site'}
                                 </p>
                             </div>
@@ -588,12 +689,12 @@ export default function WorkerPortal() {
                                 <h3 className="text-lg font-semibold text-slate-800 mb-4 text-center">
                                     QR Code Scanner
                                 </h3>
-                                <QRScanner
-                                    action={activeScan}
-                                    onScanSuccess={handleScanSuccess}
-                                    onScanError={handleScanError}
-                                    currentShiftSiteId={(activeScan === 'leave' || activeScan === 'lunch') ? currentShift?.site_id : null}
-                                />
+                <QRScanner
+                    action={activeScan}
+                    onScanSuccess={handleScanSuccess}
+                    onScanError={handleScanError}
+                    currentShiftSiteId={(activeScan === 'leave' || activeScan === 'breaks') ? currentShift?.site_id : null}
+                />
                             </div>
 
                             {/* Action Buttons */}
@@ -609,7 +710,7 @@ export default function WorkerPortal() {
                             </div>
 
                             {/* Site Info */}
-                            {currentShift && (activeScan === 'leave' || activeScan === 'lunch') && (
+                            {currentShift && (activeScan === 'leave' || activeScan === 'breaks') && (
                                 <Card className="border-0 shadow-md mt-6 bg-slate-50">
                                     <CardContent className="p-4">
                                         <p className="text-sm text-slate-600 text-center">
@@ -653,6 +754,22 @@ export default function WorkerPortal() {
                                 <SelectContent>
                                     <SelectItem value="AL">Annual Leave (AL)</SelectItem>
                                     <SelectItem value="MC">Medical Leave (MC)</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Leave Duration</label>
+                            <Select
+                                value={leaveRequestData.leave_duration}
+                                onValueChange={(value) => setLeaveRequestData({ ...leaveRequestData, leave_duration: value })}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Select duration" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="full_day">Full Day</SelectItem>
+                                    <SelectItem value="half_day_morning">Half Day - Morning</SelectItem>
+                                    <SelectItem value="half_day_afternoon">Half Day - Afternoon</SelectItem>
                                 </SelectContent>
                             </Select>
                         </div>
