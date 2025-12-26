@@ -2104,8 +2104,8 @@ export default function AdminDashboard() {
                                                                                 shift.entry_time,
                                                                                 shift.leave_time,
                                                                                 shift.lunch_start,
-                                                                                shift.lunch_end,
-                                                                                shift.work_date
+                                                                                shift.work_date,
+                                                                                shift.lunch_end
                                                                             );
                                                                             return (
                                                                                 <div>
