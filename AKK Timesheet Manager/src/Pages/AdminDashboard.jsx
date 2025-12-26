@@ -1365,12 +1365,12 @@ export default function AdminDashboard() {
                         </div>
                     </div>
 
-                    <div class="salary-breakdown">
+                        <div class="salary-breakdown">
                         <div class="salary-header">Salary Breakdown</div>
 
                         <div class="salary-row">
-                            <div class="salary-label">OT Pay</div>
-                            <div class="salary-amount">$${payableOtHours.toFixed(2)}</div>
+                            <div class="salary-label">Basic Pay</div>
+                            <div class="salary-amount">$${basicPay.toFixed(2)}</div>
                         </div>
 
                         <div class="salary-row">
