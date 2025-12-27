@@ -11,6 +11,7 @@ import WorkerPortal from './Pages/WorkerPortal.jsx'
 import AdminLogin from './Pages/AdminLogin.jsx'
 import AdminDashboard from './Pages/AdminDashboard.jsx'
 import History from './Pages/History.jsx'
+import LeaveHistory from './Pages/LeaveHistory.jsx'
 
 const queryClient = new QueryClient()
 
@@ -26,6 +27,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
           <Route path="/AdminLogin" element={<AdminLogin />} />
           <Route path="/AdminDashboard" element={<AdminDashboard />} />
           <Route path="/History" element={<History />} />
+          <Route path="/LeaveHistory" element={<LeaveHistory />} />
         </Routes>
       </BrowserRouter>
       <Toaster position="top-center" />

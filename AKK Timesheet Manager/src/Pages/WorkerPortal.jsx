@@ -4,7 +4,7 @@ import { Button } from "@/Components/ui/button";
 import { Badge } from "@/Components/ui/badge";
 import { Input } from "@/Components/ui/input";
 import { Textarea } from "@/Components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/Components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectGroup, SelectLabel } from "@/Components/ui/select";
 import {
     Dialog,
     DialogContent,
@@ -57,6 +57,24 @@ export default function WorkerPortal() {
 
             if (error) throw error;
             return data || [];
+        },
+        enabled: !!workerId
+    });
+
+    // Fetch worker's leave balances
+    const { data: workerBalance, isLoading: isLoadingBalance } = useQuery({
+        queryKey: ['workerBalance', workerId],
+        queryFn: async () => {
+            if (!workerId) return null;
+
+            const { data, error } = await supabase
+                .from('worker_details')
+                .select('annual_leave_balance, medical_leave_balance')
+                .eq('employee_id', workerId)
+                .single();
+
+            if (error) throw error;
+            return data;
         },
         enabled: !!workerId
     });
@@ -338,8 +356,9 @@ export default function WorkerPortal() {
                 to_date: '',
                 reason: ''
             });
-            // Invalidate admin queries to refresh immediately
+            // Invalidate admin queries and worker's leave history to refresh immediately
             queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
+            queryClient.invalidateQueries({ queryKey: ['workerLeaveHistory', workerId] });
         },
         onError: (error) => {
             console.error('Leave submission failed:', error);
@@ -361,9 +380,31 @@ export default function WorkerPortal() {
             return;
         }
 
-        // Calculate the number of days requested
+        // Calculate the number of days requested (accounting for half-days)
         const timeDiff = toDate.getTime() - fromDate.getTime();
-        const daysRequested = Math.ceil(timeDiff / (1000 * 3600 * 24)) + 1; // +1 to include both start and end dates
+        let daysRequested = Math.ceil(timeDiff / (1000 * 3600 * 24)) + 1; // +1 to include both start and end dates
+
+        // Adjust for half-day leaves
+        if (leaveRequestData.leave_duration?.includes('half_day')) {
+            daysRequested = daysRequested * 0.5; // Half-day = 0.5 days
+        }
+
+        // Check balance for paid leave types
+        const paidLeaveTypes = ['Annual Leave', 'Sick Leave & Hospitalisation Leave'];
+        const isPaidLeave = paidLeaveTypes.includes(leaveRequestData.leave_type);
+
+        if (isPaidLeave && workerBalance) {
+            const availableBalance = leaveRequestData.leave_type === 'Annual Leave'
+                ? workerBalance.annual_leave_balance || 0
+                : workerBalance.medical_leave_balance || 0;
+
+            if (daysRequested > availableBalance) {
+                toast.error(
+                    `Insufficient leave balance. You have ${availableBalance} days available but requested ${daysRequested} days.`
+                );
+                return;
+            }
+        }
 
         const leaveDataWithDays = {
             ...leaveRequestData,
@@ -415,15 +456,26 @@ export default function WorkerPortal() {
                             <p className="font-medium">{workerName}</p>
                             <p className="text-sm text-slate-300">ID: {workerId}</p>
                         </div>
-                        <Link to={createPageUrl('History')}>
-                            <Button
-                                variant="outline"
-                                className="border-white/30 text-white hover:bg-white/10 bg-transparent"
-                            >
-                                <History className="w-4 h-4 mr-2" />
-                                <span className="hidden sm:inline">History</span>
-                            </Button>
-                        </Link>
+                        <div className="flex gap-2">
+                            <Link to={createPageUrl('LeaveHistory')}>
+                                <Button
+                                    variant="outline"
+                                    className="border-white/30 text-white hover:bg-white/10 bg-transparent"
+                                >
+                                    <Calendar className="w-4 h-4 mr-2" />
+                                    <span className="hidden sm:inline">Leave History</span>
+                                </Button>
+                            </Link>
+                            <Link to={createPageUrl('History')}>
+                                <Button
+                                    variant="outline"
+                                    className="border-white/30 text-white hover:bg-white/10 bg-transparent"
+                                >
+                                    <History className="w-4 h-4 mr-2" />
+                                    <span className="hidden sm:inline">History</span>
+                                </Button>
+                            </Link>
+                        </div>
                     </div>
                 </div>
             </header>
@@ -749,10 +801,23 @@ export default function WorkerPortal() {
                         <DialogDescription>
                             Request for annual leave (AL) or medical leave (MC). All requests require admin approval.
                         </DialogDescription>
+                        {workerBalance && !isLoadingBalance && (
+                            <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                                <h4 className="text-sm font-medium text-blue-800 mb-2">Your Current Leave Balance</h4>
+                                <div className="flex gap-4 text-sm">
+                                    <span className="text-blue-700">
+                                        <strong>Annual Leave:</strong> {workerBalance.annual_leave_balance || 0} days
+                                    </span>
+                                    <span className="text-blue-700">
+                                        <strong>Medical Leave:</strong> {workerBalance.medical_leave_balance || 0} days
+                                    </span>
+                                </div>
+                            </div>
+                        )}
                     </DialogHeader>
                     <div className="space-y-4">
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Leave Type</label>
+                            <label className="text-sm font-medium">Type of Leave</label>
                             <Select
                                 value={leaveRequestData.leave_type}
                                 onValueChange={(value) => setLeaveRequestData({ ...leaveRequestData, leave_type: value })}
@@ -761,8 +826,29 @@ export default function WorkerPortal() {
                                     <SelectValue placeholder="Select leave type" />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value="AL">Annual Leave (AL)</SelectItem>
-                                    <SelectItem value="MC">Medical Leave (MC)</SelectItem>
+                                    <SelectGroup>
+                                        <SelectLabel className="text-green-600 font-medium">Paid Leave Types</SelectLabel>
+                                        <SelectItem value="Annual Leave">Annual Leave</SelectItem>
+                                        <SelectItem value="Maternity Leave">Maternity Leave</SelectItem>
+                                        <SelectItem value="Paternity Leave">Paternity Leave</SelectItem>
+                                        <SelectItem value="Shared Parental Leave">Shared Parental Leave</SelectItem>
+                                        <SelectItem value="Childcare Leave">Childcare Leave</SelectItem>
+                                        <SelectItem value="Sick Leave & Hospitalisation Leave">Sick Leave & Hospitalisation Leave</SelectItem>
+                                        <SelectItem value="National Service (NS) Leave">National Service (NS) Leave</SelectItem>
+                                        <SelectItem value="Adoption Leave">Adoption Leave</SelectItem>
+                                        <SelectItem value="Non-Statutory Leave (Employer Provided)">Non-Statutory Leave (Employer Provided)</SelectItem>
+                                        <SelectItem value="Compassionate / Bereavement Leave">Compassionate / Bereavement Leave</SelectItem>
+                                        <SelectItem value="Marriage Leave">Marriage Leave</SelectItem>
+                                        <SelectItem value="Study / Exam Leave">Study / Exam Leave</SelectItem>
+                                        <SelectItem value="Birthday Leave">Birthday Leave</SelectItem>
+                                        <SelectItem value="Mental Health Day">Mental Health Day</SelectItem>
+                                        <SelectItem value="Volunteer Leave">Volunteer Leave</SelectItem>
+                                    </SelectGroup>
+                                    <SelectGroup>
+                                        <SelectLabel className="text-red-600 font-medium">Unpaid Leave Types</SelectLabel>
+                                        <SelectItem value="Unpaid Leave">Unpaid Leave</SelectItem>
+                                        <SelectItem value="Unpaid Infant Care Leave">Unpaid Infant Care Leave</SelectItem>
+                                    </SelectGroup>
                                 </SelectContent>
                             </Select>
                         </div>

@@ -6,6 +6,7 @@ import { Button } from "@/Components/ui/button";
 import { Input } from "@/Components/ui/input";
 import { Badge } from "@/Components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/Components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/Components/ui/select";
 import {
     Dialog,
     DialogContent,
@@ -54,6 +55,25 @@ export default function AdminDashboard() {
     const [isBulkPrinting, setIsBulkPrinting] = useState(false);
     const [logoUrl, setLogoUrl] = useState(localStorage.getItem('logoUrl') || '/Akk-logo.jpg');
     const [showLeaveHistory, setShowLeaveHistory] = useState(false);
+    const [showEditShiftDialog, setShowEditShiftDialog] = useState(false);
+    const [editingShift, setEditingShift] = useState(null);
+    const [shiftEditData, setShiftEditData] = useState({
+        entry_time: '',
+        leave_time: '',
+        lunch_start: '',
+        lunch_end: '',
+        leave_type: ''
+    });
+
+    // Leave editing states
+    const [showEditLeaveDialog, setShowEditLeaveDialog] = useState(false);
+    const [editingLeave, setEditingLeave] = useState(null);
+    const [leaveEditData, setLeaveEditData] = useState({
+        leave_type: '',
+        leave_duration: '',
+        from_date: '',
+        to_date: ''
+    });
 
     // Worker Information states
     const [showAddWorkerDialog, setShowAddWorkerDialog] = useState(false);
@@ -73,7 +93,11 @@ export default function AdminDashboard() {
         ot_rate_per_hour: '',
         sun_ph_rate_per_day: '',
         basic_salary_per_day: '',
-        password: ''
+        password: '',
+        annual_leave_limit: '10',
+        medical_leave_limit: '14',
+        annual_leave_balance: '10',
+        medical_leave_balance: '14'
     });
 
     const queryClient = useQueryClient();
@@ -153,28 +177,215 @@ export default function AdminDashboard() {
     // Delete leave request mutation
     const deleteLeaveMutation = useMutation({
         mutationFn: async (leaveId) => {
-            // First delete associated shift records (leave days)
-            await supabase
+            console.log('🗑️ DELETING LEAVE REQUEST:', leaveId);
+
+            // First get the leave request details
+            const { data: leaveRequest, error: fetchError } = await supabase
+                .from('leave_requests')
+                .select('*')
+                .eq('id', leaveId)
+                .single();
+
+            if (fetchError) {
+                console.error('❌ Failed to fetch leave request:', fetchError);
+                throw fetchError;
+            }
+
+            console.log('📋 Leave request details:', leaveRequest);
+
+            // Calculate days to restore to balance - ONLY PAID DAYS
+            const leaveDays = [];
+            const fromDate = new Date(leaveRequest.from_date);
+            const toDate = new Date(leaveRequest.to_date);
+
+            for (let date = new Date(fromDate); date <= toDate; date.setDate(date.getDate() + 1)) {
+                leaveDays.push(new Date(date));
+            }
+
+            let totalRequestedDays = leaveDays.length;
+            if (leaveRequest.leave_duration?.includes('half_day')) {
+                totalRequestedDays = totalRequestedDays * 0.5; // Half-day = 0.5 days
+            }
+
+            // RECALCULATE PAID vs UNPAID using same logic as approval
+            const deleteIsPaidLeave = [
+                'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
+                'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+                'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
+                'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
+                'Volunteer Leave'
+            ].includes(leaveRequest.leave_type);
+
+            const deleteIsAnnualLeave = leaveRequest.leave_type === 'Annual Leave';
+            const deleteIsMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
+
+            let paidDays = 0;
+            if (deleteIsPaidLeave && (deleteIsAnnualLeave || deleteIsMedicalLeave)) {
+                // Use same hardcoded balance as approval
+                const availableBalance = 10;
+                if (totalRequestedDays <= availableBalance) {
+                    paidDays = totalRequestedDays;
+                } else {
+                    paidDays = availableBalance;
+                }
+            }
+
+            // Only restore the PAID days that were actually deducted
+            const daysToRestore = paidDays;
+
+            console.log('🔄 Days to restore:', daysToRestore, 'for', leaveRequest.leave_type);
+
+            // Restore leave balance if it was a paid leave
+            const paidLeaveTypes = [
+                'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
+                'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+                'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
+                'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
+                'Volunteer Leave'
+            ];
+            const isPaidLeave = paidLeaveTypes.includes(leaveRequest.leave_type);
+            const isAnnualLeave = leaveRequest.leave_type === 'Annual Leave';
+            const isMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
+
+            if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
+                console.log('💰 RESTORING LEAVE BALANCE - Worker:', leaveRequest.employee_id);
+
+                // Get current balance
+                const { data: currentBalanceData, error: balanceError } = await supabase
+                    .from('worker_details')
+                    .select(isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance')
+                    .eq('employee_id', leaveRequest.employee_id)
+                    .single();
+
+                if (balanceError) {
+                    console.error('❌ Failed to get current balance:', balanceError);
+                } else {
+                    const currentBalance = isAnnualLeave ?
+                        currentBalanceData.annual_leave_balance :
+                        currentBalanceData.medical_leave_balance;
+                    const newBalance = currentBalance + daysToRestore;
+
+                    console.log('🔢 Balance calculation:', currentBalance, '+', daysToRestore, '=', newBalance);
+
+        // Update balance
+        console.log('📤 UPDATING balance in database:', {
+            field: isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance',
+            oldValue: currentBalance,
+            newValue: newBalance,
+            employee_id: leaveRequest.employee_id
+        });
+
+        const { data: updateResult, error: updateError } = await supabase
+            .from('worker_details')
+            .update({
+                [isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance']: newBalance
+            })
+            .eq('employee_id', leaveRequest.employee_id)
+            .select(isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance');
+
+        if (updateError) {
+            console.error('❌ Failed to restore balance:', updateError);
+            throw updateError;
+        }
+
+        console.log('✅ Balance update result:', updateResult);
+        console.log('🎉 Balance successfully restored from', currentBalance, 'to', newBalance);
+                }
+            }
+
+            // Delete ALL associated shift records for this leave period (not just specific types)
+            console.log('🗑️ Deleting shift records for leave period...');
+            const { error: deleteShiftsError } = await supabase
                 .from('shifts')
                 .delete()
-                .eq('leave_type', 'AL')
-                .or(`leave_type.eq.MC,leave_type.eq.UNPAID_LEAVE,leave_type.like.%_HALF_%`);
+                .eq('worker_id', leaveRequest.employee_id)
+                .gte('work_date', leaveRequest.from_date)
+                .lte('work_date', leaveRequest.to_date)
+                .neq('leave_type', null); // Only delete leave shifts, not work shifts
 
-            // Then delete the leave request
-            const { error } = await supabase
+            if (deleteShiftsError) {
+                console.error('❌ Failed to delete leave shifts:', deleteShiftsError);
+                throw deleteShiftsError;
+            }
+
+            console.log('✅ Leave shifts deleted');
+
+            // Verify shift deletion worked
+            const { data: verifyShifts, error: verifyShiftsError } = await supabase
+                .from('shifts')
+                .select('id')
+                .eq('worker_id', leaveRequest.employee_id)
+                .gte('work_date', leaveRequest.from_date)
+                .lte('work_date', leaveRequest.to_date)
+                .neq('leave_type', null);
+
+            if (verifyShiftsError) {
+                console.error('❌ Failed to verify shift deletion:', verifyShiftsError);
+                throw verifyShiftsError;
+            } else {
+                console.log('🔍 Leave shifts remaining after deletion:', verifyShifts?.length || 0);
+                if (verifyShifts && verifyShifts.length > 0) {
+                    console.error('❌ CRITICAL: Leave shifts were not deleted properly!', verifyShifts);
+                    throw new Error(`Shift deletion failed - ${verifyShifts.length} leave shifts still exist after deletion attempt.`);
+                } else {
+                    console.log('✅ All leave shifts successfully deleted');
+                }
+            }
+
+            // Finally delete the specific leave request by ID
+            console.log('🗑️ Deleting leave request with ID:', leaveId);
+
+            const { data: deleteData, error: deleteError } = await supabase
                 .from('leave_requests')
                 .delete()
-                .eq('id', leaveId);
+                .eq('id', leaveId)
+                .select('id');
 
-            if (error) throw error;
+            if (deleteError) {
+                console.error('❌ Failed to delete leave request:', deleteError);
+                throw deleteError;
+            }
+
+            console.log('✅ Leave request deleted successfully. Deleted count:', deleteData?.length || 0, 'records');
+
+            // Verify the specific record is actually gone
+            const { data: verifyData, error: verifyError } = await supabase
+                .from('leave_requests')
+                .select('id')
+                .eq('id', leaveId)
+                .single();
+
+            if (verifyError && verifyError.code === 'PGRST116') {
+                console.log('✅ VERIFICATION: Leave successfully deleted from database');
+            } else if (verifyData) {
+                console.error('❌ VERIFICATION FAILED: Leave still exists in database!', verifyData);
+                throw new Error('Database delete operation failed - record still exists. Check Supabase RLS policies, permissions, or foreign key constraints.');
+            } else {
+                console.error('❌ VERIFICATION ERROR:', verifyError);
+                throw new Error('Could not verify leave deletion');
+            }
+
+            // Return leave request data for onSuccess callback
+            return leaveRequest;
         },
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['allLeaveRequests'] });
-            queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
-            queryClient.invalidateQueries({ queryKey: ['shifts'] });
-            toast.success('Leave request and associated shifts deleted successfully');
+        onSuccess: (data, leaveId) => {
+            console.log('✅ LEAVE DELETE SUCCESSFUL - Leave ID:', leaveId, 'Worker:', data.employee_id);
+
+            // Force refetch all relevant queries
+            queryClient.refetchQueries({ queryKey: ['allLeaveRequests'] });
+            queryClient.refetchQueries({ queryKey: ['leaveRequests'] });
+            queryClient.refetchQueries({ queryKey: ['shifts'] });
+            queryClient.refetchQueries({ queryKey: ['workerData'] });
+            queryClient.refetchQueries({ queryKey: ['workerLeaveHistory'] });
+            queryClient.refetchQueries({ queryKey: ['workerLeaveHistory', data.employee_id] });
+
+            // Close the leave history dialog to force UI refresh
+            setShowLeaveHistory(false);
+
+            toast.success('Leave request deleted successfully!');
         },
         onError: (error) => {
+            console.error('💥 LEAVE DELETE FAILED:', error);
             toast.error(`Failed to delete leave request: ${error.message}`);
         },
     });
@@ -203,8 +414,10 @@ export default function AdminDashboard() {
 
             if (updateError) throw updateError;
 
-            // If approved, create shift records for each leave day
+            // If approved, create shift records for each leave day AND deduct from leave balance
             if (status === 'approved') {
+                console.log('Creating leave shifts for approved leave:', leaveRequest.id);
+
                 const leaveDays = [];
                 const fromDate = new Date(leaveRequest.from_date);
                 const toDate = new Date(leaveRequest.to_date);
@@ -213,26 +426,245 @@ export default function AdminDashboard() {
                     leaveDays.push(new Date(date));
                 }
 
-                // Create shift records for each leave day
-                const shiftRecords = leaveDays.map(date => {
-                    let entryTime, leaveTime, leaveType;
+                console.log('Leave days to create shifts for:', leaveDays.length);
+
+                // FIRST: Delete any existing work shifts for these dates to avoid conflicts
+                const workDates = leaveDays.map(date => date.toISOString().split('T')[0]);
+                const { error: deleteError } = await supabase
+                    .from('shifts')
+                    .delete()
+                    .eq('worker_id', leaveRequest.employee_id)
+                    .in('work_date', workDates)
+                    .is('leave_type', null); // Only delete work shifts, not existing leave shifts
+
+                if (deleteError) {
+                    console.error('Error deleting conflicting work shifts:', deleteError);
+                } else {
+                    console.log('Deleted conflicting work shifts');
+                }
+
+                // Determine leave type categories
+                const paidLeaveTypes = [
+                    'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
+                    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+                    'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
+                    'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
+                    'Volunteer Leave'
+                ];
+                const isPaidLeave = paidLeaveTypes.includes(leaveRequest.leave_type);
+                const isUnpaidLeave = leaveRequest.leave_type === 'Unpaid Leave' || leaveRequest.leave_type === 'Unpaid Infant Care Leave';
+                const isAnnualLeave = leaveRequest.leave_type === 'Annual Leave';
+                const isMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
+
+                console.log('Leave type:', leaveRequest.leave_type, 'Is paid:', isPaidLeave, 'Is unpaid:', isUnpaidLeave);
+
+                // Calculate total requested days
+                let totalRequestedDays = leaveDays.length;
+                if (leaveRequest.leave_duration?.includes('half_day')) {
+                    totalRequestedDays = totalRequestedDays * 0.5; // Half-day = 0.5 days
+                }
+
+                console.log('Total requested days:', totalRequestedDays);
+
+                // LEAVE LIMIT ENFORCEMENT: Split into paid and unpaid portions
+                console.log('🔄 STARTING LEAVE LIMIT ENFORCEMENT - isPaidLeave:', isPaidLeave, 'isAnnualLeave:', isAnnualLeave, 'isMedicalLeave:', isMedicalLeave);
+                let paidDays = 0;
+                let unpaidDays = 0;
+
+                // TEMPORARY HARDCODED FIX: Assume 10 days balance for Annual Leave
+                try {
+                    console.log('🔍 STARTING LIMIT ENFORCEMENT BLOCK');
+                    if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
+                        console.log('✅ ENTERED LEAVE LIMIT CHECK - Using hardcoded balance logic');
+                        const availableBalance = 10; // Hardcoded for now
+                        console.log('Available balance:', availableBalance, 'Requested days:', totalRequestedDays, 'Type:', isAnnualLeave ? 'annual' : 'medical');
+
+                        if (totalRequestedDays <= availableBalance) {
+                            // All days can be paid
+                            paidDays = totalRequestedDays;
+                            unpaidDays = 0;
+                            console.log('✅ All days can be paid leave');
+                        } else {
+                            // Split into paid and unpaid - use all available balance for paid leave
+                            paidDays = availableBalance;
+                            unpaidDays = totalRequestedDays - availableBalance;
+                            console.log(`🔄 Splitting: ${paidDays} paid days, ${unpaidDays} unpaid days`);
+                        }
+                    } else if (isUnpaidLeave) {
+                        // All days are unpaid
+                        paidDays = 0;
+                        unpaidDays = totalRequestedDays;
+                        console.log('📝 All days are unpaid leave');
+                    } else if (isPaidLeave) {
+                        // Other paid leave types (unlimited)
+                        paidDays = totalRequestedDays;
+                        unpaidDays = 0;
+                        console.log('✅ Paid leave (unlimited balance)');
+                    }
+                    console.log('🎯 LIMIT ENFORCEMENT COMPLETED - paidDays:', paidDays, 'unpaidDays:', unpaidDays);
+                } catch (limitError) {
+                    console.error('❌ LEAVE LIMIT ENFORCEMENT ERROR:', limitError);
+                    console.error('❌ Error stack:', limitError.stack);
+                    // Fallback: treat all as paid leave
+                    paidDays = totalRequestedDays;
+                    unpaidDays = 0;
+                    console.log('⚠️ FALLBACK: Treating all days as paid leave due to error');
+                }
+
+                // Deduct only the paid portion from balance
+                const daysToDeduct = paidDays;
+
+                // If there are unpaid days, we need to create additional unpaid leave shifts
+                if (unpaidDays > 0) {
+                    console.log(`⚠️ Creating ${unpaidDays} additional unpaid leave days`);
+                }
+
+                // Deduct from leave balance if it's paid leave
+                if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
+                    try {
+                        console.log('🎯 UPDATING LEAVE BALANCE - Worker:', leaveRequest.employee_id, 'Type:', isAnnualLeave ? 'ANNUAL' : 'MEDICAL', 'Days to deduct:', daysToDeduct);
+
+                        // First, verify the worker exists and get current balance
+                        console.log('🔍 LOOKING UP WORKER:', leaveRequest.employee_id);
+                        const { data: workerCheck, error: checkError } = await supabase
+                            .from('worker_details')
+                            .select('employee_id, employee_name, annual_leave_balance, medical_leave_balance')
+                            .eq('employee_id', leaveRequest.employee_id)
+                            .single();
+
+                        if (checkError) {
+                            console.error('❌ Worker lookup failed:', checkError);
+                            console.error('❌ Error details:', {
+                                message: checkError.message,
+                                code: checkError.code,
+                                details: checkError.details
+                            });
+                            throw new Error(`Worker lookup failed: ${checkError.message}`);
+                        }
+
+                        console.log('✅ Worker found:', workerCheck.employee_name, 'Current balances - AL:', workerCheck.annual_leave_balance, 'MC:', workerCheck.medical_leave_balance);
+
+                        const currentBalance = isAnnualLeave ? workerCheck.annual_leave_balance : workerCheck.medical_leave_balance;
+                        const defaultBalance = isAnnualLeave ? 10 : 14;
+                        const safeCurrentBalance = (currentBalance !== null && currentBalance !== undefined) ? currentBalance : defaultBalance;
+                        const newBalance = Math.max(0, safeCurrentBalance - daysToDeduct);
+
+                        console.log('🧮 Balance calculation:', safeCurrentBalance, '-', daysToDeduct, '=', newBalance);
+
+                        // Prepare update object
+                        const updateData = {};
+                        if (isAnnualLeave) {
+                            updateData.annual_leave_balance = newBalance;
+                        } else {
+                            updateData.medical_leave_balance = newBalance;
+                        }
+
+                        console.log('📦 Update payload:', updateData);
+                        console.log('👤 Updating worker:', leaveRequest.employee_id);
+
+                        // Perform the update
+                        console.log('🔄 EXECUTING BALANCE UPDATE - Employee ID:', leaveRequest.employee_id, 'Update Data:', updateData);
+                        const { error: updateError } = await supabase
+                            .from('worker_details')
+                            .update(updateData)
+                            .eq('employee_id', leaveRequest.employee_id);
+
+                        if (updateError) {
+                            console.error('❌ Balance update failed:', updateError);
+                            console.error('❌ Error details:', {
+                                message: updateError.message,
+                                code: updateError.code,
+                                details: updateError.details
+                            });
+                            throw new Error(`Balance update failed: ${updateError.message}`);
+                        }
+
+                        console.log('✅ Balance update successful! Result:', updateResult);
+                        console.log('🎉 Leave balance updated:', safeCurrentBalance, '→', newBalance);
+
+                    } catch (balanceError) {
+                        console.error('💥 LEAVE BALANCE UPDATE COMPLETELY FAILED:', balanceError);
+                        console.error('⚠️ Leave approved but balance not updated. Please check database manually.');
+                        // Continue with approval even if balance update fails
+                    }
+                }
+
+                // Create shift records for each leave day - NOW HANDLING PAID vs UNPAID SPLIT
+                const shiftRecords = leaveDays.map((date, index) => {
+                    let entryTime, leaveTime, leaveType, workedHours, sundayHours, otHours;
+
+                    // Determine if this day is paid or unpaid based on our split
+                    const isThisDayPaid = index < paidDays;
+                    const actualLeaveType = isThisDayPaid ? leaveRequest.leave_type : 'Unpaid Leave';
+
+                    console.log(`Day ${index + 1}: ${date.toISOString().split('T')[0]} - ${isThisDayPaid ? 'PAID' : 'UNPAID'} (${actualLeaveType})`);
 
                     // Handle half-day vs full-day leaves
                     if (leaveRequest.leave_duration === 'half_day_morning') {
-                        // Half-day morning: 00:00 to 12:00 (4 hours)
+                        // Half-day morning: 00:00 to 12:00 (4 hours for paid, 0 for unpaid)
                         entryTime = date.toISOString().split('T')[0] + 'T00:00:00';
                         leaveTime = date.toISOString().split('T')[0] + 'T12:00:00';
-                        leaveType = leaveRequest.leave_type + '_HALF_MORNING';
+                        leaveType = actualLeaveType + '_HALF_MORNING';
+
+                        if (isThisDayPaid) {
+                            // PAID half-day leave - check if Sunday/Public Holiday (Sundays are NOT paid for leave)
+                            const dateObj = new Date(date);
+                            const isSunday = dateObj.getDay() === 0;
+                            const isHoliday = isPublicHoliday(dateObj);
+
+                            workedHours = (isSunday || isHoliday) ? 0 : 4; // 0 hours for Sunday/holiday, 4 for weekday
+                        } else {
+                            workedHours = 0; // Unpaid half-day = 0 hours
+                        }
+                        sundayHours = 0;
+                        otHours = 0;
                     } else if (leaveRequest.leave_duration === 'half_day_afternoon') {
-                        // Half-day afternoon: 12:00 to 16:00 (4 hours)
+                        // Half-day afternoon: 12:00 to 16:00 (4 hours for paid, 0 for unpaid)
                         entryTime = date.toISOString().split('T')[0] + 'T12:00:00';
                         leaveTime = date.toISOString().split('T')[0] + 'T16:00:00';
-                        leaveType = leaveRequest.leave_type + '_HALF_AFTERNOON';
+                        leaveType = actualLeaveType + '_HALF_AFTERNOON';
+
+                        if (isThisDayPaid) {
+                            // PAID half-day leave - check if Sunday/Public Holiday (Sundays are NOT paid for leave)
+                            const dateObj = new Date(date);
+                            const isSunday = dateObj.getDay() === 0;
+                            const isHoliday = isPublicHoliday(dateObj);
+
+                            workedHours = (isSunday || isHoliday) ? 0 : 4; // 0 hours for Sunday/holiday, 4 for weekday
+                        } else {
+                            workedHours = 0; // Unpaid half-day = 0 hours
+                        }
+                        sundayHours = 0;
+                        otHours = 0;
                     } else {
-                        // Full day: 00:00 to 08:00 (8 hours)
+                        // Full day: PAID leave gets hours, UNPAID gets 0
                         entryTime = date.toISOString().split('T')[0] + 'T00:00:00';
                         leaveTime = date.toISOString().split('T')[0] + 'T08:00:00';
-                        leaveType = leaveRequest.leave_type;
+                        leaveType = actualLeaveType;
+
+                        if (isThisDayPaid) {
+                            // PAID leave - check if Sunday/Public Holiday (Sundays are NOT paid for leave)
+                            const dateObj = new Date(date);
+                            const isSunday = dateObj.getDay() === 0;
+                            const isHoliday = isPublicHoliday(dateObj);
+
+                            if (isSunday || isHoliday) {
+                                // Sundays and holidays on paid leave get 0 hours (no pay)
+                                workedHours = 0;
+                                sundayHours = 0;
+                                otHours = 0;
+                                console.log(`Sunday/Holiday on paid leave: 0 hours (no pay)`);
+                            } else {
+                                workedHours = 8; // Regular paid leave day = 8 hours
+                                sundayHours = 0;
+                                otHours = 0;
+                            }
+                        } else {
+                            // UNPAID leave - always 0 hours
+                            workedHours = 0;
+                            sundayHours = 0;
+                            otHours = 0;
+                        }
                     }
 
                     return {
@@ -240,26 +672,130 @@ export default function AdminDashboard() {
                         work_date: date.toISOString().split('T')[0],
                         entry_time: entryTime,
                         leave_time: leaveTime,
-                        has_left: false, // Mark as leave, not actual shift
+                        has_left: true, // Leave is considered completed
+                        worked_hours: workedHours || 0,
+                        sunday_hours: sundayHours || 0,
+                        ot_hours: otHours || 0,
                         leave_type: leaveType,
                         site_id: null // No site for leave days
                     };
                 });
 
+                console.log('Creating shift records:', shiftRecords.length);
                 const { error: shiftError } = await supabase
                     .from('shifts')
                     .insert(shiftRecords);
 
                 if (shiftError) {
                     console.error('Error creating leave shifts:', shiftError);
-                    // Don't throw here, leave request was already approved
+                    toast.error('Leave approved but failed to create shift records');
+                } else {
+                    console.log('Successfully created leave shift records');
+                }
+            }
+            // If rejected or deleted, restore leave balance
+            else if (status === 'rejected' || status === 'deleted') {
+                console.log('Restoring leave balance for', status, 'leave:', leaveRequest.id);
+
+                const paidLeaveTypes = [
+                    'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
+                    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+                    'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
+                    'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
+                    'Volunteer Leave'
+                ];
+                const isPaidLeave = paidLeaveTypes.includes(leaveRequest.leave_type);
+                const isAnnualLeave = leaveRequest.leave_type === 'Annual Leave';
+                const isMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
+
+                // Calculate leave days to restore to balance (only for paid leave)
+                if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
+                    const leaveDays = [];
+                    const fromDate = new Date(leaveRequest.from_date);
+                    const toDate = new Date(leaveRequest.to_date);
+
+                    for (let date = new Date(fromDate); date <= toDate; date.setDate(date.getDate() + 1)) {
+                        leaveDays.push(new Date(date));
+                    }
+
+                    let daysToRestore = leaveDays.length;
+                    if (leaveRequest.leave_duration?.includes('half_day')) {
+                        daysToRestore = daysToRestore * 0.5; // Half-day = 0.5 days
+                    }
+
+                    console.log(`Restoring ${daysToRestore} days to ${isAnnualLeave ? 'annual' : 'medical'} leave balance`);
+
+                    // First get current balance
+                    const { data: currentBalanceData, error: fetchBalanceError } = await supabase
+                        .from('worker_details')
+                        .select(isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance')
+                        .eq('employee_id', leaveRequest.employee_id)
+                        .single();
+
+                    if (fetchBalanceError) {
+                        console.error('Error fetching current balance for restore:', fetchBalanceError);
+                    } else {
+                        const currentBalance = isAnnualLeave ? currentBalanceData.annual_leave_balance : currentBalanceData.medical_leave_balance;
+                        const newBalance = currentBalance + daysToRestore;
+
+                        const { error: balanceError } = await supabase
+                            .from('worker_details')
+                            .update({
+                                [isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance']: newBalance
+                            })
+                            .eq('employee_id', leaveRequest.employee_id);
+
+                        if (balanceError) {
+                            console.error('Error restoring leave balance:', balanceError);
+                        } else {
+                            console.log(`Successfully restored leave balance: ${currentBalance} → ${newBalance}`);
+                        }
+                    }
+
+                    if (balanceError) {
+                        console.error('Error restoring leave balance:', balanceError);
+                    } else {
+                        console.log(`Successfully restored ${daysToRestore} days to leave balance`);
+                    }
+                }
+
+                // Delete the shift records created for this leave
+                const { error: deleteShiftsError } = await supabase
+                    .from('shifts')
+                    .delete()
+                    .eq('worker_id', leaveRequest.employee_id)
+                    .neq('leave_type', null)
+                    .gte('work_date', leaveRequest.from_date)
+                    .lte('work_date', leaveRequest.to_date);
+
+                if (deleteShiftsError) {
+                    console.error('Error deleting leave shifts:', deleteShiftsError);
+                } else {
+                    console.log('Successfully deleted leave shift records');
                 }
             }
         },
         onSuccess: () => {
+            // Invalidate all relevant queries to refresh data immediately
             queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
+            queryClient.invalidateQueries({ queryKey: ['allLeaveRequests'] });
             queryClient.invalidateQueries({ queryKey: ['shifts'] });
-            toast.success('Leave request updated successfully');
+            queryClient.invalidateQueries({ queryKey: ['workerData'] }); // Force balance refresh
+            queryClient.invalidateQueries({ queryKey: ['workerLeaveHistory'] }); // Force history refresh
+
+            toast.success('Leave request updated successfully - refreshing data...');
+
+            // Silent refresh: Invalidate all queries to force data refresh without page reload
+            setTimeout(() => {
+                console.log('🔄 Silent refresh of all data after leave approval...');
+                queryClient.invalidateQueries({ queryKey: ['workerData'] });
+                queryClient.invalidateQueries({ queryKey: ['workerLeaveHistory'] });
+                queryClient.invalidateQueries({ queryKey: ['workerLeaveHistory', leaveRequest.employee_id] });
+                queryClient.invalidateQueries({ queryKey: ['workerBalance'] });
+                queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
+                queryClient.invalidateQueries({ queryKey: ['allLeaveRequests'] });
+                queryClient.invalidateQueries({ queryKey: ['shifts'] });
+            }, 1000);
         },
     });
 
@@ -598,7 +1134,7 @@ export default function AdminDashboard() {
     // Worker mutations
     const addWorkerMutation = useMutation({
         mutationFn: async (workerData) => {
-            // Insert into consolidated worker_details table
+            // Insert into worker_details table with all required fields
             const { error } = await supabase
                 .from('worker_details')
                 .insert([{
@@ -611,7 +1147,11 @@ export default function AdminDashboard() {
                     ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
                     sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
                     basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
-                    password_hash: workerData.password
+                    password_hash: workerData.password,
+                    annual_leave_balance: 10, // Default annual leave balance
+                    medical_leave_balance: 14, // Default medical leave balance
+                    annual_leave_limit: 10, // Default annual leave limit
+                    medical_leave_limit: 14 // Default medical leave limit
                 }]);
 
             if (error) throw error;
@@ -620,6 +1160,8 @@ export default function AdminDashboard() {
             toast.success('Worker added successfully');
             setShowAddWorkerDialog(false);
             resetWorkerForm();
+            // Invalidate queries to refresh data
+            queryClient.invalidateQueries({ queryKey: ['shifts'] });
         },
     });
 
@@ -635,7 +1177,11 @@ export default function AdminDashboard() {
                     bank_account_number: workerData.bank_account_number,
                     ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
                     sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
-                    basic_salary_per_day: parseFloat(workerData.basic_salary_per_day)
+                    basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
+                    annual_leave_limit: parseInt(workerData.annual_leave_limit),
+                    medical_leave_limit: parseInt(workerData.medical_leave_limit),
+                    annual_leave_balance: parseInt(workerData.annual_leave_balance),
+                    medical_leave_balance: parseInt(workerData.medical_leave_balance)
                 })
                 .eq('employee_id', employee_id);
             if (error) throw error;
@@ -724,7 +1270,11 @@ export default function AdminDashboard() {
                 bank_account_number: data.bank_account_number,
                 ot_rate_per_hour: data.ot_rate_per_hour.toString(),
                 sun_ph_rate_per_day: data.sun_ph_rate_per_day.toString(),
-                basic_salary_per_day: data.basic_salary_per_day.toString()
+                basic_salary_per_day: data.basic_salary_per_day.toString(),
+                annual_leave_limit: data.annual_leave_limit?.toString() || '10',
+                medical_leave_limit: data.medical_leave_limit?.toString() || '14',
+                annual_leave_balance: data.annual_leave_balance?.toString() || '10',
+                medical_leave_balance: data.medical_leave_balance?.toString() || '14'
             });
             setEditWorkerId(employeeId.trim());
             setShowEditWorkerDialog(true);
@@ -878,6 +1428,19 @@ export default function AdminDashboard() {
             }
 
             console.log('Found shifts:', workerShifts?.length || 0);
+            console.log('Shifts data:', workerShifts);
+
+            // Debug: Check for leave shifts
+            const leaveShifts = workerShifts?.filter(s => s.leave_type) || [];
+            console.log('Leave shifts found:', leaveShifts.length);
+            if (leaveShifts.length > 0) {
+                console.log('Leave shift details:', leaveShifts.map(s => ({
+                    date: s.work_date,
+                    leave_type: s.leave_type,
+                    worked_hours: s.worked_hours,
+                    sunday_hours: s.sunday_hours
+                })));
+            }
 
             // Get worker details for payslip
             const { data: workerDetails, error: workerError } = await supabase
@@ -912,40 +1475,57 @@ export default function AdminDashboard() {
 
             console.log('Working days:', workingDaysData.working_days);
 
-        // If we have shifts, fetch related data separately
-        if (workerShifts && workerShifts.length > 0) {
-            const siteIds = [...new Set(workerShifts.map(shift => shift.site_id))];
+            // If we have shifts, fetch related data separately
+            if (workerShifts && workerShifts.length > 0) {
+                const siteIds = [...new Set(workerShifts.map(shift => shift.site_id))];
 
-            // Fetch workers (we only need the name for the header)
-            const { data: workers } = await supabase
-                .from('worker_details')
-                .select('employee_id, employee_name')
-                .eq('employee_id', workerId)
-                .single();
+                // Fetch workers (we only need the name for the header)
+                const { data: workers } = await supabase
+                    .from('worker_details')
+                    .select('employee_id, employee_name')
+                    .eq('employee_id', workerId)
+                    .single();
 
-            // Fetch sites
-            const { data: sites } = await supabase
-                .from('sites')
-                .select('id, site_name')
-                .in('id', siteIds);
+                // Fetch sites
+                const { data: sites } = await supabase
+                    .from('sites')
+                    .select('id, site_name')
+                    .in('id', siteIds);
 
-            // Merge data into shifts
+                // Merge data into shifts
+                workerShifts.forEach(shift => {
+                    shift.workers = workers;
+                    shift.sites = sites?.find(s => s.id === shift.site_id) || null;
+                });
+            }
+
+            // Group shifts by date to handle multiple shifts per day and prioritize leave shifts
+            const groupedShiftsByDate = {};
             workerShifts.forEach(shift => {
-                shift.workers = workers;
-                shift.sites = sites?.find(s => s.id === shift.site_id) || null;
+                const dateKey = shift.work_date;
+                if (!groupedShiftsByDate[dateKey]) {
+                    groupedShiftsByDate[dateKey] = [];
+                }
+                groupedShiftsByDate[dateKey].push(shift);
             });
-        }
+
+            console.log('Shifts grouped by date:', groupedShiftsByDate);
 
         const workerName = workerShifts[0]?.workers?.employee_name || 'Unknown Worker';
 
         // Calculate monthly totals for payslip using recalculated values
         let monthlyBasicHours = 0;
+        let totalWorkedHours = 0; // Actual worked hours only
         let monthlySundayHours = 0;
         let monthlyOtHours = 0;
 
         workerShifts.forEach(shift => {
-            if (shift.has_left) {
-                // Recalculate hours using the new logic
+            if (shift.leave_type) {
+                // Leave shifts: only add to basic hours (leave entitlement for salary)
+                monthlyBasicHours += shift.worked_hours || 0;
+                // Don't add leave hours to actual worked hours
+            } else if (shift.has_left) {
+                // Work shifts: add to all hour categories
                 const recalc = calculateShiftHours(
                     shift.entry_time,
                     shift.leave_time,
@@ -954,12 +1534,13 @@ export default function AdminDashboard() {
                     shift.lunch_end
                 );
                 monthlyBasicHours += recalc.basicHours;
+                totalWorkedHours += recalc.basicHours; // Only actual worked hours
                 monthlySundayHours += recalc.sundayHours;
                 monthlyOtHours += recalc.otHours;
             }
         });
 
-        const totalWorkedHours = monthlyBasicHours + monthlyOtHours + monthlySundayHours;
+        totalWorkedHours = totalWorkedHours + monthlyOtHours + monthlySundayHours;
         const totalSunPhHours = monthlySundayHours;
         const totalBasicDays = monthlyBasicHours / 8;
         const totalSunPhDays = monthlySundayHours / 8;
@@ -1205,7 +1786,7 @@ export default function AdminDashboard() {
                                 <th>Total Worked Hours</th>
                                 <th>Basic Days</th>
                                 <th>Sun/PH Days</th>
-                                <th>AL/MC</th>
+                                <th>Type of Leave</th>
                                 <th>Site</th>
                             </tr>
                         </thead>
@@ -1231,61 +1812,105 @@ export default function AdminDashboard() {
             const isSundayDay = isSunday(date);
             const isHolidayDay = isPublicHoliday(date);
 
-            // Sum all shifts for this day - recalculate using new logic
-            let totalBasicHours = 0;
-            let totalSundayHours = 0;
-            let totalOtHours = 0;
-            let shiftDetails = [];
-            let leaveType = null;
+        // Sum all shifts for this day - recalculate using new logic
+        let totalBasicHours = 0;
+        let totalSundayHours = 0;
+        let totalOtHours = 0;
+        let totalWorkedHours = 0;
+        let shiftDetails = [];
+        let leaveType = null;
+        let hasLeaveShift = false;
 
-            dayShifts.forEach(shift => {
-                if (shift.has_left) {
-                    // Recalculate hours using the new logic
-                    const recalc = calculateShiftHours(
-                        shift.entry_time,
-                        shift.leave_time,
-                        shift.lunch_start,
-                        shift.work_date,
-                        shift.lunch_end
-                    );
-                    totalBasicHours += recalc.basicHours;
-                    totalSundayHours += recalc.sundayHours;
-                    totalOtHours += recalc.otHours;
+        dayShifts.forEach(shift => {
+            if (shift.has_left && !shift.leave_type) {
+                // This is a work shift - calculate hours normally
+                const recalc = calculateShiftHours(
+                    shift.entry_time,
+                    shift.leave_time,
+                    shift.lunch_start,
+                    shift.work_date,
+                    shift.lunch_end
+                );
+                totalBasicHours += recalc.basicHours;
+                totalSundayHours += recalc.sundayHours;
+                totalOtHours += recalc.otHours;
 
-                    shiftDetails.push({
-                        entry: shift.entry_time ? formatTime(shift.entry_time) : '',
-                        leave: shift.leave_time ? formatTime(shift.leave_time) : '',
-                        lunch: (shift.lunch_start && shift.lunch_end)
-                            ? `${formatTime(shift.lunch_start)} - ${formatTime(shift.lunch_end)}`
-                            : '',
-                        site: shift.sites?.site_name || ''
-                    });
-                } else if (shift.leave_type) {
-                    // This is a leave day - handle half-day and full-day leaves
-                    if (shift.leave_type === 'AL' || shift.leave_type === 'MC') {
-                        // Full-day paid leave - counts as 8 basic hours
-                        leaveType = shift.leave_type;
-                        totalBasicHours = 8;
+                shiftDetails.push({
+                    entry: shift.entry_time ? formatTime(shift.entry_time) : '',
+                    leave: shift.leave_time ? formatTime(shift.leave_time) : '',
+                    lunch: (shift.lunch_start && shift.lunch_end)
+                        ? `${formatTime(shift.lunch_start)} - ${formatTime(shift.lunch_end)}`
+                        : '',
+                    site: shift.sites?.site_name || ''
+                });
+            } else if (shift.leave_type) {
+                // This is a leave shift - set leave type but don't count as worked hours
+                hasLeaveShift = true;
+
+                const paidLeaveTypes = [
+                    'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
+                    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+                    'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
+                    'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
+                    'Volunteer Leave'
+                ];
+
+                const isPaidLeave = paidLeaveTypes.includes(shift.leave_type);
+                const isUnpaidLeave = shift.leave_type === 'Unpaid Leave' || shift.leave_type === 'Unpaid Infant Care Leave';
+
+                if (shift.leave_type.includes('_HALF_')) {
+                    // Half-day leave - counts as 4 basic hours for paid, 0 for unpaid
+                    if (isPaidLeave) {
+                        leaveType = shift.leave_type.replace('_HALF_MORNING', ' (Half Day)').replace('_HALF_AFTERNOON', ' (Half Day)');
+                        // Check if it's Sunday or public holiday - no pay for leave on these days
+                        const dateObj = new Date(dateStr);
+                        const isSunday = dateObj.getDay() === 0;
+                        const isHoliday = isPublicHoliday(dateObj);
+
+                        totalBasicHours = (isSunday || isHoliday) ? 0 : 4; // 0 hours for Sunday/holiday, 4 for weekday
+                        totalWorkedHours = 0; // No worked hours for leave days
                         totalOtHours = 0;
                         totalSundayHours = 0;
-                    } else if (shift.leave_type.includes('_HALF_')) {
-                        // Half-day leave - counts as 4 basic hours
-                        const baseType = shift.leave_type.split('_')[0]; // AL or MC
-                        leaveType = baseType + ' (0.5)'; // Show as "AL (0.5)" or "MC (0.5)"
-                        totalBasicHours = 4; // Half day = 4 hours
-                        totalOtHours = 0;
-                        totalSundayHours = 0;
-                    } else if (shift.leave_type === 'UNPAID_LEAVE') {
-                        // Unpaid leave - 0 hours
-                        leaveType = 'UNPAID';
-                        totalBasicHours = 0;
+                    } else if (isUnpaidLeave) {
+                        leaveType = shift.leave_type.replace('_HALF_MORNING', ' (Half Day)').replace('_HALF_AFTERNOON', ' (Half Day)');
+                        totalBasicHours = 0; // No entitlement for unpaid leave
+                        totalWorkedHours = 0; // No worked hours for leave days
                         totalOtHours = 0;
                         totalSundayHours = 0;
                     }
-                }
-            });
+    } else {
+        // Full-day leave
+        if (isPaidLeave) {
+            leaveType = shift.leave_type;
+            // Check if it's Sunday or public holiday - no pay for leave on these days
+            const dateObj = new Date(dateStr);
+            const isSunday = dateObj.getDay() === 0;
+            const isHoliday = isPublicHoliday(dateObj);
 
-            const totalWorkedHours = totalBasicHours + totalSundayHours + totalOtHours;
+            totalBasicHours = (isSunday || isHoliday) ? 0 : 8; // 0 hours for Sunday/holiday, 8 for weekday
+            totalWorkedHours = 0; // No worked hours for leave days
+            totalOtHours = 0;
+            totalSundayHours = 0;
+        } else if (isUnpaidLeave) {
+            leaveType = shift.leave_type;
+            totalBasicHours = 0; // No entitlement for unpaid leave
+            totalWorkedHours = 0; // No worked hours for leave days
+            totalOtHours = 0;
+            totalSundayHours = 0;
+        }
+    }
+            }
+        });
+
+        // If there are both work and leave shifts on the same day, prioritize leave
+        if (hasLeaveShift && leaveType) {
+            // Reset work shift details since this is primarily a leave day
+            shiftDetails = []; // Clear work shift details for leave days
+            // For leave days, total worked hours should be 0 (no actual work done)
+            totalWorkedHours = 0;
+        } else {
+            totalWorkedHours = totalBasicHours + totalSundayHours + totalOtHours;
+        }
             const basicDays = totalBasicHours / 8;
             const sundayDays = totalSundayHours / 8;
 
@@ -1980,6 +2605,24 @@ export default function AdminDashboard() {
                                                                 <div className="flex gap-2">
                                                                     <Button
                                                                         size="sm"
+                                                                        variant="outline"
+                                                                        onClick={() => {
+                                                                            setEditingShift(shift);
+                                                                            setShiftEditData({
+                                                                                entry_time: shift.entry_time || '',
+                                                                                leave_time: shift.leave_time || '',
+                                                                                lunch_start: shift.lunch_start || '',
+                                                                                lunch_end: shift.lunch_end || '',
+                                                                                leave_type: shift.leave_type || ''
+                                                                            });
+                                                                            setShowEditShiftDialog(true);
+                                                                        }}
+                                                                    >
+                                                                        <Edit2 className="w-4 h-4 mr-1" />
+                                                                        Edit
+                                                                    </Button>
+                                                                    <Button
+                                                                        size="sm"
                                                                         variant="destructive"
                                                                         onClick={() => {
                                                                             if (window.confirm('Are you sure you want to delete this shift? This action cannot be undone.')) {
@@ -2193,14 +2836,21 @@ export default function AdminDashboard() {
                                                             <div className="text-xs text-slate-600">
                                                                 <strong>ID:</strong> {request.employee_id}
                                                             </div>
-                                                            <div className="text-xs text-slate-600">
-                                                                <strong>Period:</strong> {formatDate(request.from_date)} - {formatDate(request.to_date)}
-                                                            </div>
-                                                            {request.reason && (
-                                                                <div className="text-xs text-slate-600">
-                                                                    <strong>Reason:</strong> {request.reason}
-                                                                </div>
-                                                            )}
+                                            <div className="text-xs text-slate-600">
+                                                <strong>Period:</strong> {formatDate(request.from_date)} - {formatDate(request.to_date)}
+                                            </div>
+                                            <div className="text-xs text-slate-600">
+                                                <strong>Duration:</strong> {(() => {
+                                                    if (request.leave_duration === 'half_day_morning') return 'Half Day (Morning)';
+                                                    if (request.leave_duration === 'half_day_afternoon') return 'Half Day (Afternoon)';
+                                                    return 'Full Day';
+                                                })()}
+                                            </div>
+                                            {request.reason && (
+                                                <div className="text-xs text-slate-600">
+                                                    <strong>Reason:</strong> {request.reason}
+                                                </div>
+                                            )}
                                                         </div>
 
                                                         <div className="flex gap-2">
@@ -2597,6 +3247,42 @@ export default function AdminDashboard() {
                             />
                         </div>
                         <div className="space-y-2">
+                            <label className="text-sm font-medium">Annual Leave Limit (Days)</label>
+                            <Input
+                                type="number"
+                                placeholder="10"
+                                value={workerFormData.annual_leave_limit}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, annual_leave_limit: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Medical Leave Limit (Days)</label>
+                            <Input
+                                type="number"
+                                placeholder="14"
+                                value={workerFormData.medical_leave_limit}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, medical_leave_limit: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Current Annual Leave Balance</label>
+                            <Input
+                                type="number"
+                                placeholder="10"
+                                value={workerFormData.annual_leave_balance}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, annual_leave_balance: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Current Medical Leave Balance</label>
+                            <Input
+                                type="number"
+                                placeholder="14"
+                                value={workerFormData.medical_leave_balance}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, medical_leave_balance: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
                             <label className="text-sm font-medium">Password</label>
                             <Input
                                 type="password"
@@ -2717,6 +3403,42 @@ export default function AdminDashboard() {
                                 placeholder="0.00"
                                 value={workerFormData.basic_salary_per_day}
                                 onChange={(e) => setWorkerFormData({ ...workerFormData, basic_salary_per_day: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Annual Leave Limit (Days)</label>
+                            <Input
+                                type="number"
+                                placeholder="10"
+                                value={workerFormData.annual_leave_limit}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, annual_leave_limit: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Medical Leave Limit (Days)</label>
+                            <Input
+                                type="number"
+                                placeholder="14"
+                                value={workerFormData.medical_leave_limit}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, medical_leave_limit: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Current Annual Leave Balance</label>
+                            <Input
+                                type="number"
+                                placeholder="10"
+                                value={workerFormData.annual_leave_balance}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, annual_leave_balance: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Current Medical Leave Balance</label>
+                            <Input
+                                type="number"
+                                placeholder="14"
+                                value={workerFormData.medical_leave_balance}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, medical_leave_balance: e.target.value })}
                             />
                         </div>
                     </div>
@@ -2851,7 +3573,13 @@ export default function AdminDashboard() {
                                                 </span>
                                             </div>
                                             <div className="text-right text-xs text-slate-500">
-                                                Days: {request.days_requested || 1}
+                                                Days: {(() => {
+                                                    const fromDate = new Date(request.from_date);
+                                                    const toDate = new Date(request.to_date);
+                                                    const timeDiff = toDate.getTime() - fromDate.getTime();
+                                                    const daysDiff = Math.ceil(timeDiff / (1000 * 3600 * 24)) + 1;
+                                                    return daysDiff;
+                                                })()}
                                             </div>
                                         </div>
 
@@ -2877,15 +3605,37 @@ export default function AdminDashboard() {
                                             )}
                                         </div>
 
-                                        {/* Delete button for individual leaves */}
+                                        {/* Action buttons for individual leaves */}
                                         <div className="flex gap-2 mt-3 pt-3 border-t border-slate-200">
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => {
+                                                    setEditingLeave(request);
+                                                    setLeaveEditData({
+                                                        leave_type: request.leave_type,
+                                                        leave_duration: request.leave_duration,
+                                                        from_date: request.from_date,
+                                                        to_date: request.to_date
+                                                    });
+                                                    setShowEditLeaveDialog(true);
+                                                }}
+                                                className="text-xs bg-blue-50 hover:bg-blue-100 border-blue-200"
+                                            >
+                                                <Edit2 className="w-3 h-3 mr-1" />
+                                                Edit
+                                            </Button>
                                             <Button
                                                 size="sm"
                                                 variant="destructive"
                                                 onClick={() => {
+                                                    console.log('🗑️ DELETE BUTTON CLICKED for leave ID:', request.id, 'Employee:', request.employee_name);
                                                     if (window.confirm(`Are you sure you want to delete this leave request for ${request.employee_name}? This will also remove associated shift records.`)) {
+                                                        console.log('✅ CONFIRMED - Starting delete mutation for leave ID:', request.id);
                                                         // Delete the leave request and associated shifts
                                                         deleteLeaveMutation.mutate(request.id);
+                                                    } else {
+                                                        console.log('❌ CANCELLED - Delete cancelled by user');
                                                     }
                                                 }}
                                                 disabled={deleteLeaveMutation?.isPending}
@@ -2973,6 +3723,397 @@ export default function AdminDashboard() {
                             Print Payslip
                         </Button>
                     </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Edit Shift Dialog */}
+            <Dialog open={showEditShiftDialog} onOpenChange={setShowEditShiftDialog}>
+                <DialogContent className="max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle>Edit Shift</DialogTitle>
+                        <DialogDescription>
+                            Edit clock-in/out times, breaks, and leave type for this shift.
+                        </DialogDescription>
+                    </DialogHeader>
+                    {editingShift ? (
+                        <>
+                            <div className="space-y-4">
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium">Entry Time</label>
+                                        <Input
+                                            type="datetime-local"
+                                            value={shiftEditData.entry_time}
+                                            onChange={(e) => setShiftEditData({ ...shiftEditData, entry_time: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium">Leave Time</label>
+                                        <Input
+                                            type="datetime-local"
+                                            value={shiftEditData.leave_time}
+                                            onChange={(e) => setShiftEditData({ ...shiftEditData, leave_time: e.target.value })}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium">Lunch Start</label>
+                                        <Input
+                                            type="datetime-local"
+                                            value={shiftEditData.lunch_start}
+                                            onChange={(e) => setShiftEditData({ ...shiftEditData, lunch_start: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium">Lunch End</label>
+                                        <Input
+                                            type="datetime-local"
+                                            value={shiftEditData.lunch_end}
+                                            onChange={(e) => setShiftEditData({ ...shiftEditData, lunch_end: e.target.value })}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Leave Type (Optional)</label>
+                                    <Select
+                                        value={shiftEditData.leave_type}
+                                        onValueChange={(value) => setShiftEditData({ ...shiftEditData, leave_type: value })}
+                                    >
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Select leave type" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">No Leave</SelectItem>
+                                            <SelectItem value="Annual Leave">Annual Leave</SelectItem>
+                                            <SelectItem value="Maternity Leave">Maternity Leave</SelectItem>
+                                            <SelectItem value="Paternity Leave">Paternity Leave</SelectItem>
+                                            <SelectItem value="Shared Parental Leave">Shared Parental Leave</SelectItem>
+                                            <SelectItem value="Childcare Leave">Childcare Leave</SelectItem>
+                                            <SelectItem value="Sick Leave & Hospitalisation Leave">Sick Leave & Hospitalisation Leave</SelectItem>
+                                            <SelectItem value="National Service (NS) Leave">National Service (NS) Leave</SelectItem>
+                                            <SelectItem value="Adoption Leave">Adoption Leave</SelectItem>
+                                            <SelectItem value="Non-Statutory Leave (Employer Provided)">Non-Statutory Leave (Employer Provided)</SelectItem>
+                                            <SelectItem value="Compassionate / Bereavement Leave">Compassionate / Bereavement Leave</SelectItem>
+                                            <SelectItem value="Marriage Leave">Marriage Leave</SelectItem>
+                                            <SelectItem value="Study / Exam Leave">Study / Exam Leave</SelectItem>
+                                            <SelectItem value="Birthday Leave">Birthday Leave</SelectItem>
+                                            <SelectItem value="Mental Health Day">Mental Health Day</SelectItem>
+                                            <SelectItem value="Volunteer Leave">Volunteer Leave</SelectItem>
+                                            <SelectItem value="Unpaid Leave">Unpaid Leave</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button
+                                    variant="outline"
+                                    onClick={() => setShowEditShiftDialog(false)}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    onClick={() => {
+                                        if (editingShift && shiftEditData.entry_time && shiftEditData.leave_time) {
+                                            // Recalculate hours
+                                            const calculations = calculateShiftHours(
+                                                shiftEditData.entry_time,
+                                                shiftEditData.leave_time,
+                                                [
+                                                    shiftEditData.lunch_start && shiftEditData.lunch_end ? {
+                                                        break_start: shiftEditData.lunch_start,
+                                                        break_end: shiftEditData.lunch_end
+                                                    } : null
+                                                ].filter(Boolean),
+                                                editingShift.work_date
+                                            );
+
+                                            // Update shift
+                                            const { error } = supabase
+                                                .from('shifts')
+                                                .update({
+                                                    entry_time: shiftEditData.entry_time || null,
+                                                    leave_time: shiftEditData.leave_time || null,
+                                                    lunch_start: shiftEditData.lunch_start || null,
+                                                    lunch_end: shiftEditData.lunch_end || null,
+                                                    leave_type: shiftEditData.leave_type || null,
+                                                    worked_hours: calculations.basicHours,
+                                                    sunday_hours: calculations.sundayHours,
+                                                    ot_hours: calculations.otHours,
+                                                    has_left: true
+                                                })
+                                                .eq('id', editingShift.id);
+
+                                            if (error) {
+                                                toast.error('Failed to update shift');
+                                                console.error(error);
+                                            } else {
+                                                toast.success('Shift updated successfully');
+                                                setShowEditShiftDialog(false);
+                                                queryClient.invalidateQueries({ queryKey: ['shifts'] });
+                                            }
+                                        } else {
+                                            toast.error('Entry time and leave time are required');
+                                        }
+                                    }}
+                                    className="bg-blue-600 hover:bg-blue-700"
+                                >
+                                    Update Shift
+                                </Button>
+                            </DialogFooter>
+                        </>
+                    ) : (
+                        <div className="text-center py-8">
+                            <p className="text-slate-500">Loading shift data...</p>
+                        </div>
+                    )}
+                </DialogContent>
+            </Dialog>
+
+            {/* Edit Leave Dialog */}
+            <Dialog open={showEditLeaveDialog} onOpenChange={setShowEditLeaveDialog}>
+                <DialogContent className="max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>Edit Leave Request</DialogTitle>
+                        <DialogDescription>
+                            Edit the leave type and duration. Changes will update the database and associated shift records.
+                        </DialogDescription>
+                    </DialogHeader>
+                    {editingLeave ? (
+                        <>
+                            <div className="space-y-4">
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Leave Type</label>
+                                    <Select
+                                        value={leaveEditData.leave_type}
+                                        onValueChange={(value) => setLeaveEditData({ ...leaveEditData, leave_type: value })}
+                                    >
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Select leave type" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="Annual Leave">Annual Leave</SelectItem>
+                                            <SelectItem value="Maternity Leave">Maternity Leave</SelectItem>
+                                            <SelectItem value="Paternity Leave">Paternity Leave</SelectItem>
+                                            <SelectItem value="Shared Parental Leave">Shared Parental Leave</SelectItem>
+                                            <SelectItem value="Childcare Leave">Childcare Leave</SelectItem>
+                                            <SelectItem value="Sick Leave & Hospitalisation Leave">Sick Leave & Hospitalisation Leave</SelectItem>
+                                            <SelectItem value="National Service (NS) Leave">National Service (NS) Leave</SelectItem>
+                                            <SelectItem value="Adoption Leave">Adoption Leave</SelectItem>
+                                            <SelectItem value="Non-Statutory Leave (Employer Provided)">Non-Statutory Leave (Employer Provided)</SelectItem>
+                                            <SelectItem value="Compassionate / Bereavement Leave">Compassionate / Bereavement Leave</SelectItem>
+                                            <SelectItem value="Marriage Leave">Marriage Leave</SelectItem>
+                                            <SelectItem value="Study / Exam Leave">Study / Exam Leave</SelectItem>
+                                            <SelectItem value="Birthday Leave">Birthday Leave</SelectItem>
+                                            <SelectItem value="Mental Health Day">Mental Health Day</SelectItem>
+                                            <SelectItem value="Volunteer Leave">Volunteer Leave</SelectItem>
+                                            <SelectItem value="Unpaid Leave">Unpaid Leave</SelectItem>
+                                            <SelectItem value="Unpaid Infant Care Leave">Unpaid Infant Care Leave</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Duration</label>
+                                    <Select
+                                        value={leaveEditData.leave_duration}
+                                        onValueChange={(value) => setLeaveEditData({ ...leaveEditData, leave_duration: value })}
+                                    >
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="Select duration" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="full_day">Full Day</SelectItem>
+                                            <SelectItem value="half_day_morning">Half Day (Morning)</SelectItem>
+                                            <SelectItem value="half_day_afternoon">Half Day (Afternoon)</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium">From Date</label>
+                                        <Input
+                                            type="date"
+                                            value={leaveEditData.from_date}
+                                            onChange={(e) => setLeaveEditData({ ...leaveEditData, from_date: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-medium">To Date</label>
+                                        <Input
+                                            type="date"
+                                            value={leaveEditData.to_date}
+                                            onChange={(e) => setLeaveEditData({ ...leaveEditData, to_date: e.target.value })}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button
+                                    variant="outline"
+                                    onClick={() => setShowEditLeaveDialog(false)}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    onClick={async () => {
+                                        if (!leaveEditData.leave_type || !leaveEditData.from_date || !leaveEditData.to_date) {
+                                            toast.error('Please fill in all required fields');
+                                            return;
+                                        }
+
+                                        try {
+                                            // Update the leave request
+                                            const { error: updateError } = await supabase
+                                                .from('leave_requests')
+                                                .update({
+                                                    leave_type: leaveEditData.leave_type,
+                                                    leave_duration: leaveEditData.leave_duration,
+                                                    from_date: leaveEditData.from_date,
+                                                    to_date: leaveEditData.to_date,
+                                                    updated_at: new Date().toISOString()
+                                                })
+                                                .eq('id', editingLeave.id);
+
+                                            if (updateError) throw updateError;
+
+                                            // If leave type changed and it was approved, update associated shift records
+                                            if (editingLeave.status === 'approved') {
+                                                console.log('Updating shift records for approved leave...');
+
+                                                // Delete existing shift records for this leave period
+                                                const { error: deleteError } = await supabase
+                                                    .from('shifts')
+                                                    .delete()
+                                                    .eq('worker_id', editingLeave.employee_id)
+                                                    .gte('work_date', editingLeave.from_date)
+                                                    .lte('work_date', editingLeave.to_date)
+                                                    .neq('leave_type', null);
+
+                                                if (deleteError) {
+                                                    console.error('Error deleting old shift records:', deleteError);
+                                                }
+
+                                                // Create new shift records with updated leave type
+                                                const leaveDays = [];
+                                                const fromDate = new Date(leaveEditData.from_date);
+                                                const toDate = new Date(leaveEditData.to_date);
+
+                                                for (let date = new Date(fromDate); date <= toDate; date.setDate(date.getDate() + 1)) {
+                                                    leaveDays.push(new Date(date));
+                                                }
+
+                                                const paidLeaveTypes = [
+                                                    'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
+                                                    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+                                                    'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
+                                                    'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
+                                                    'Volunteer Leave'
+                                                ];
+                                                const isPaidLeave = paidLeaveTypes.includes(leaveEditData.leave_type);
+
+                                                const shiftRecords = leaveDays.map((date) => {
+                                                    let entryTime, leaveTime, leaveType, workedHours, sundayHours, otHours;
+
+                                                    const dateObj = new Date(date);
+                                                    const isSunday = dateObj.getDay() === 0;
+                                                    const isHoliday = isPublicHoliday(dateObj);
+
+                                                    if (leaveEditData.leave_duration === 'half_day_morning') {
+                                                        entryTime = date.toISOString().split('T')[0] + 'T00:00:00';
+                                                        leaveTime = date.toISOString().split('T')[0] + 'T12:00:00';
+                                                        leaveType = leaveEditData.leave_type + '_HALF_MORNING';
+
+                                                        if (isPaidLeave) {
+                                                            workedHours = (isSunday || isHoliday) ? 0 : 4;
+                                                        } else {
+                                                            workedHours = 0;
+                                                        }
+                                                        sundayHours = 0;
+                                                        otHours = 0;
+                                                    } else if (leaveEditData.leave_duration === 'half_day_afternoon') {
+                                                        entryTime = date.toISOString().split('T')[0] + 'T12:00:00';
+                                                        leaveTime = date.toISOString().split('T')[0] + 'T16:00:00';
+                                                        leaveType = leaveEditData.leave_type + '_HALF_AFTERNOON';
+
+                                                        if (isPaidLeave) {
+                                                            workedHours = (isSunday || isHoliday) ? 0 : 4;
+                                                        } else {
+                                                            workedHours = 0;
+                                                        }
+                                                        sundayHours = 0;
+                                                        otHours = 0;
+                                                    } else {
+                                                        entryTime = date.toISOString().split('T')[0] + 'T00:00:00';
+                                                        leaveTime = date.toISOString().split('T')[0] + 'T08:00:00';
+                                                        leaveType = leaveEditData.leave_type;
+
+                                                        if (isPaidLeave) {
+                                                            if (isSunday || isHoliday) {
+                                                                workedHours = 0;
+                                                                sundayHours = 0;
+                                                                otHours = 0;
+                                                            } else {
+                                                                workedHours = 8;
+                                                                sundayHours = 0;
+                                                                otHours = 0;
+                                                            }
+                                                        } else {
+                                                            workedHours = 0;
+                                                            sundayHours = 0;
+                                                            otHours = 0;
+                                                        }
+                                                    }
+
+                                                    return {
+                                                        worker_id: editingLeave.employee_id,
+                                                        work_date: date.toISOString().split('T')[0],
+                                                        entry_time: entryTime,
+                                                        leave_time: leaveTime,
+                                                        has_left: true,
+                                                        worked_hours: workedHours || 0,
+                                                        sunday_hours: sundayHours || 0,
+                                                        ot_hours: otHours || 0,
+                                                        leave_type: leaveType,
+                                                        site_id: null
+                                                    };
+                                                });
+
+                                                const { error: insertError } = await supabase
+                                                    .from('shifts')
+                                                    .insert(shiftRecords);
+
+                                                if (insertError) {
+                                                    console.error('Error creating new shift records:', insertError);
+                                                    toast.error('Leave updated but failed to update shift records');
+                                                } else {
+                                                    console.log('Successfully updated shift records');
+                                                }
+                                            }
+
+                                            toast.success('Leave request updated successfully');
+                                            setShowEditLeaveDialog(false);
+
+                                            // Refresh data
+                                            queryClient.invalidateQueries({ queryKey: ['allLeaveRequests'] });
+                                            queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
+                                            queryClient.invalidateQueries({ queryKey: ['shifts'] });
+
+                                        } catch (error) {
+                                            console.error('Error updating leave:', error);
+                                            toast.error('Failed to update leave request');
+                                        }
+                                    }}
+                                    className="bg-blue-600 hover:bg-blue-700"
+                                >
+                                    Update Leave
+                                </Button>
+                            </DialogFooter>
+                        </>
+                    ) : (
+                        <div className="text-center py-8">
+                            <p className="text-slate-500">Loading leave data...</p>
+                        </div>
+                    )}
                 </DialogContent>
             </Dialog>
         </div>
