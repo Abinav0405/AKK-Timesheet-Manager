@@ -1,7 +1,7 @@
 /*
- * SUPABASE DATABASE SETUP - NEW TABLES ONLY
+ * SUPABASE DATABASE MIGRATION - LEAVE TYPES & LIMITS UPDATE
  *
- * Run these SQL commands in your Supabase SQL Editor to create the NEW required tables:
+ * Run these SQL commands in your Supabase SQL Editor to update the database schema:
  * https://xuqvzlbfqdkfjjhdvzac.supabase.co
  *
  * Go to: SQL Editor -> New Query -> Paste the SQL below -> Run
@@ -9,94 +9,94 @@
 
 /*
 
--- Ensure workers table exists with proper structure
-CREATE TABLE IF NOT EXISTS workers (
-  worker_id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
+-- MIGRATION: Update leave types and add leave limits
+-- Run this SQL in Supabase SQL Editor to update the database
+
+-- Step 1: Update leave_requests table to support expanded leave types
+ALTER TABLE leave_requests DROP CONSTRAINT IF EXISTS leave_requests_leave_type_check;
+ALTER TABLE leave_requests ADD CONSTRAINT leave_requests_leave_type_check CHECK (leave_type IN (
+    'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
+    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+    'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
+    'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
+    'Volunteer Leave', 'Unpaid Leave'
+));
+
+-- Step 2: Update shifts table to support expanded leave types
+ALTER TABLE shifts DROP CONSTRAINT IF EXISTS shifts_leave_type_check;
+ALTER TABLE shifts ADD CONSTRAINT shifts_leave_type_check CHECK (leave_type IN (
+    'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
+    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+    'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
+    'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
+    'Volunteer Leave', 'Unpaid Leave',
+    'Annual Leave_HALF_MORNING', 'Annual Leave_HALF_AFTERNOON',
+    'Maternity Leave_HALF_MORNING', 'Maternity Leave_HALF_AFTERNOON',
+    'Paternity Leave_HALF_MORNING', 'Paternity Leave_HALF_AFTERNOON',
+    'Shared Parental Leave_HALF_MORNING', 'Shared Parental Leave_HALF_AFTERNOON',
+    'Childcare Leave_HALF_MORNING', 'Childcare Leave_HALF_AFTERNOON',
+    'Sick Leave & Hospitalisation Leave_HALF_MORNING', 'Sick Leave & Hospitalisation Leave_HALF_AFTERNOON',
+    'National Service (NS) Leave_HALF_MORNING', 'National Service (NS) Leave_HALF_AFTERNOON',
+    'Adoption Leave_HALF_MORNING', 'Adoption Leave_HALF_AFTERNOON',
+    'Non-Statutory Leave (Employer Provided)_HALF_MORNING', 'Non-Statutory Leave (Employer Provided)_HALF_AFTERNOON',
+    'Compassionate / Bereavement Leave_HALF_MORNING', 'Compassionate / Bereavement Leave_HALF_AFTERNOON',
+    'Marriage Leave_HALF_MORNING', 'Marriage Leave_HALF_AFTERNOON',
+    'Study / Exam Leave_HALF_MORNING', 'Study / Exam Leave_HALF_AFTERNOON',
+    'Birthday Leave_HALF_MORNING', 'Birthday Leave_HALF_AFTERNOON',
+    'Mental Health Day_HALF_MORNING', 'Mental Health Day_HALF_AFTERNOON',
+    'Volunteer Leave_HALF_MORNING', 'Volunteer Leave_HALF_AFTERNOON'
+));
+
+-- Step 3: Add leave limit fields to worker_details if not exists
+ALTER TABLE worker_details
+ADD COLUMN IF NOT EXISTS annual_leave_limit INTEGER DEFAULT 10,
+ADD COLUMN IF NOT EXISTS medical_leave_limit INTEGER DEFAULT 14;
+
+-- Update existing workers with default leave limits
+UPDATE worker_details SET annual_leave_limit = 10, medical_leave_limit = 14 WHERE annual_leave_limit IS NULL;
+
+-- Step 4: Create index for better leave queries
+CREATE INDEX IF NOT EXISTS idx_leave_requests_leave_type ON leave_requests(leave_type);
+CREATE INDEX IF NOT EXISTS idx_worker_details_leave_limits ON worker_details(annual_leave_limit, medical_leave_limit);
+
+-- Step 5: Ensure breaks table exists for multiple breaks support
+CREATE TABLE IF NOT EXISTS breaks (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  shift_id UUID NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+  break_start TIMESTAMP WITH TIME ZONE NOT NULL,
+  break_end TIMESTAMP WITH TIME ZONE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Create worker_details table
-CREATE TABLE worker_details (
-  employee_id TEXT PRIMARY KEY,
-  nric_fin TEXT NOT NULL,
-  employee_name TEXT NOT NULL,
-  designation TEXT NOT NULL,
-  date_joined DATE NOT NULL,
-  bank_account_number TEXT NOT NULL,
-  ot_rate_per_hour NUMERIC(10,2) NOT NULL,
-  sun_ph_rate_per_day NUMERIC(10,2) NOT NULL,
-  basic_salary_per_day NUMERIC(10,2) NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+-- Enable RLS on breaks table if not already enabled
+ALTER TABLE breaks ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "breaks_select_policy" ON breaks;
+DROP POLICY IF EXISTS "breaks_insert_policy" ON breaks;
+DROP POLICY IF EXISTS "breaks_update_policy" ON breaks;
+DROP POLICY IF EXISTS "breaks_delete_policy" ON breaks;
 
--- Create working_days_config table
-CREATE TABLE working_days_config (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  year INTEGER NOT NULL,
-  month INTEGER NOT NULL CHECK (month >= 1 AND month <= 12),
-  working_days INTEGER NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  UNIQUE(year, month)
-);
+CREATE POLICY "breaks_select_policy" ON breaks FOR SELECT USING (true);
+CREATE POLICY "breaks_insert_policy" ON breaks FOR INSERT WITH CHECK (true);
+CREATE POLICY "breaks_update_policy" ON breaks FOR UPDATE USING (true) WITH CHECK (true);
+CREATE POLICY "breaks_delete_policy" ON breaks FOR DELETE USING (true);
 
--- Create leave_requests table
-CREATE TABLE leave_requests (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  employee_id TEXT NOT NULL,
-  leave_type TEXT NOT NULL CHECK (leave_type IN ('AL', 'MC')),
-  leave_duration TEXT NOT NULL DEFAULT 'full_day' CHECK (leave_duration IN ('full_day', 'half_day_morning', 'half_day_afternoon')),
-  from_date DATE NOT NULL,
-  to_date DATE NOT NULL,
-  reason TEXT,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
-  admin_notes TEXT,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+-- Step 6: Migrate existing lunch data to breaks table if lunch columns still exist
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shifts' AND column_name = 'lunch_start') THEN
+        -- Migrate existing lunch data
+        INSERT INTO breaks (shift_id, break_start, break_end)
+        SELECT id, lunch_start, lunch_end
+        FROM shifts
+        WHERE lunch_start IS NOT NULL
+        ON CONFLICT DO NOTHING;
 
--- Indexes for performance
-CREATE INDEX idx_worker_details_employee_id ON worker_details(employee_id);
-CREATE INDEX idx_working_days_config_year_month ON working_days_config(year, month);
-CREATE INDEX idx_leave_requests_employee_id ON leave_requests(employee_id);
-CREATE INDEX idx_leave_requests_status ON leave_requests(status);
-CREATE INDEX idx_leave_requests_created_at ON leave_requests(created_at DESC);
+        -- Drop old lunch columns
+        ALTER TABLE shifts DROP COLUMN IF EXISTS lunch_start;
+        ALTER TABLE shifts DROP COLUMN IF EXISTS lunch_end;
+    END IF;
+END $$;
 
--- Enable RLS
-ALTER TABLE workers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE worker_details ENABLE ROW LEVEL SECURITY;
-ALTER TABLE working_days_config ENABLE ROW LEVEL SECURITY;
-ALTER TABLE leave_requests ENABLE ROW LEVEL SECURITY;
-
--- RLS Policies for workers table
-CREATE POLICY "workers_select_own_policy" ON workers FOR SELECT USING (auth.jwt() ->> 'role' = 'admin' OR auth.jwt() ->> 'worker_id' = worker_id);
-CREATE POLICY "workers_insert_policy" ON workers FOR INSERT WITH CHECK (auth.jwt() ->> 'role' = 'admin');
-CREATE POLICY "workers_update_policy" ON workers FOR UPDATE USING (auth.jwt() ->> 'role' = 'admin');
-CREATE POLICY "workers_delete_policy" ON workers FOR DELETE USING (auth.jwt() ->> 'role' = 'admin');
-
--- RLS Policies for worker_details table
-CREATE POLICY "worker_details_select_own_policy" ON worker_details FOR SELECT USING (auth.jwt() ->> 'role' = 'admin' OR auth.jwt() ->> 'worker_id' = employee_id);
-CREATE POLICY "worker_details_insert_policy" ON worker_details FOR INSERT WITH CHECK (auth.jwt() ->> 'role' = 'admin');
-CREATE POLICY "worker_details_update_policy" ON worker_details FOR UPDATE USING (auth.jwt() ->> 'role' = 'admin');
-CREATE POLICY "worker_details_delete_policy" ON worker_details FOR DELETE USING (auth.jwt() ->> 'role' = 'admin');
-
--- RLS Policies for working_days_config
-CREATE POLICY "working_days_config_select_policy" ON working_days_config FOR SELECT USING (true);
-CREATE POLICY "working_days_config_insert_policy" ON working_days_config FOR INSERT WITH CHECK (true);
-CREATE POLICY "working_days_config_update_policy" ON working_days_config FOR UPDATE USING (true) WITH CHECK (true);
-CREATE POLICY "working_days_config_delete_policy" ON working_days_config FOR DELETE USING (true);
-
--- Create shifts table (if not exists)
-CREATE TABLE IF NOT EXISTS shifts (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  worker_id TEXT NOT NULL,
-  site_id TEXT,
-  work_date DATE NOT NULL,
-  entry_time TIMESTAMP WITH TIME ZONE,
-  leave_time TIMESTAMP WITH TIME ZONE,
-  lunch_start TIMESTAMP WITH TIME ZONE,
-  lunch_end TIMESTAMP WITH TIME ZONE,
   has_left BOOLEAN DEFAULT false,
   worked_hours NUMERIC(5,2) DEFAULT 0,
   sunday_hours NUMERIC(5,2) DEFAULT 0,
