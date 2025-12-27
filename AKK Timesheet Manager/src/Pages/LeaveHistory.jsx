@@ -67,7 +67,7 @@ export default function LeaveHistory() {
         }
     }, []);
 
-    // Calculate total approved leave days by type (only for paid leave)
+    // Calculate total approved leave days by type (only for paid leave, excluding Sundays)
     const calculateApprovedLeaveDays = (leaveType) => {
         return leaveHistory
             .filter(request =>
@@ -76,10 +76,19 @@ export default function LeaveHistory() {
                 !['Unpaid Leave', 'Unpaid Infant Care Leave'].includes(request.leave_type) // Exclude unpaid leaves
             )
             .reduce((total, request) => {
-                // Calculate days based on date range
+                // Calculate days based on date range, excluding Sundays for paid leave
                 const fromDate = new Date(request.from_date);
                 const toDate = new Date(request.to_date);
-                const days = Math.ceil((toDate - fromDate) / (1000 * 60 * 60 * 24)) + 1;
+                let days = 0;
+
+                // Count each day in the range
+                for (let date = new Date(fromDate); date <= toDate; date.setDate(date.getDate() + 1)) {
+                    const isSunday = date.getDay() === 0;
+                    // For paid leave, exclude Sundays
+                    if (!isSunday) {
+                        days += 1;
+                    }
+                }
 
                 // Adjust for half-day leaves
                 if (request.leave_duration?.includes('half_day')) {

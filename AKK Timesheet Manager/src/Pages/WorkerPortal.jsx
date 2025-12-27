@@ -380,9 +380,21 @@ export default function WorkerPortal() {
             return;
         }
 
-        // Calculate the number of days requested (accounting for half-days)
+        // Calculate the number of days requested (accounting for half-days and excluding Sundays for paid leave)
         const timeDiff = toDate.getTime() - fromDate.getTime();
         let daysRequested = Math.ceil(timeDiff / (1000 * 3600 * 24)) + 1; // +1 to include both start and end dates
+
+        // For paid leave, count only weekdays (exclude Sundays)
+        if (paidLeaveTypes.includes(leaveRequestData.leave_type)) {
+            let weekdayCount = 0;
+            for (let date = new Date(fromDate); date <= toDate; date.setDate(date.getDate() + 1)) {
+                const isSunday = date.getDay() === 0;
+                if (!isSunday) {
+                    weekdayCount += 1;
+                }
+            }
+            daysRequested = weekdayCount;
+        }
 
         // Adjust for half-day leaves
         if (leaveRequestData.leave_duration?.includes('half_day')) {

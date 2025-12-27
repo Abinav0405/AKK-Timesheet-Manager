@@ -458,36 +458,62 @@ export default function AdminDashboard() {
 
                 console.log('Leave type:', leaveRequest.leave_type, 'Is paid:', isPaidLeave, 'Is unpaid:', isUnpaidLeave);
 
-                // Calculate total requested days
+                // Calculate total requested days (EXCLUDING Sundays for paid leave)
                 let totalRequestedDays = leaveDays.length;
                 if (leaveRequest.leave_duration?.includes('half_day')) {
                     totalRequestedDays = totalRequestedDays * 0.5; // Half-day = 0.5 days
                 }
 
-                console.log('Total requested days:', totalRequestedDays);
+                // For paid leave, calculate only weekdays (excluding Sundays and holidays)
+                let weekdaysCount = 0;
+                if (isPaidLeave) {
+                    weekdaysCount = leaveDays.filter(date => {
+                        const dateObj = new Date(date);
+                        const isSunday = dateObj.getDay() === 0;
+                        const isHoliday = isPublicHoliday(dateObj);
+                        return !(isSunday || isHoliday);
+                    }).length;
 
-                // LEAVE LIMIT ENFORCEMENT: Split into paid and unpaid portions
+                    if (leaveRequest.leave_duration?.includes('half_day')) {
+                        weekdaysCount = weekdaysCount * 0.5; // Half-day = 0.5 days
+                    }
+                }
+
+                console.log('Total calendar days:', leaveDays.length, 'Weekdays for paid leave:', weekdaysCount);
+
+                // LEAVE LIMIT ENFORCEMENT: Only deduct weekdays for paid leave
                 console.log('🔄 STARTING LEAVE LIMIT ENFORCEMENT - isPaidLeave:', isPaidLeave, 'isAnnualLeave:', isAnnualLeave, 'isMedicalLeave:', isMedicalLeave);
                 let paidDays = 0;
                 let unpaidDays = 0;
 
-                // TEMPORARY HARDCODED FIX: Assume 10 days balance for Annual Leave
                 try {
                     console.log('🔍 STARTING LIMIT ENFORCEMENT BLOCK');
                     if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
-                        console.log('✅ ENTERED LEAVE LIMIT CHECK - Using hardcoded balance logic');
-                        const availableBalance = 10; // Hardcoded for now
-                        console.log('Available balance:', availableBalance, 'Requested days:', totalRequestedDays, 'Type:', isAnnualLeave ? 'annual' : 'medical');
+                        console.log('✅ ENTERED LEAVE LIMIT CHECK - Using balance logic');
+                        // Get actual balance from database
+                        const { data: workerCheck, error: checkError } = await supabase
+                            .from('worker_details')
+                            .select('annual_leave_balance, medical_leave_balance')
+                            .eq('employee_id', leaveRequest.employee_id)
+                            .single();
 
-                        if (totalRequestedDays <= availableBalance) {
-                            // All days can be paid
-                            paidDays = totalRequestedDays;
+                        if (checkError) throw checkError;
+
+                        const availableBalance = isAnnualLeave ?
+                            workerCheck.annual_leave_balance :
+                            workerCheck.medical_leave_balance;
+
+                        console.log('Available balance:', availableBalance, 'Requested weekdays:', weekdaysCount, 'Type:', isAnnualLeave ? 'annual' : 'medical');
+
+                        if (weekdaysCount <= availableBalance) {
+                            // All weekdays can be paid
+                            paidDays = weekdaysCount;
                             unpaidDays = 0;
-                            console.log('✅ All days can be paid leave');
+                            console.log('✅ All weekdays can be paid leave');
                         } else {
                             // Split into paid and unpaid - use all available balance for paid leave
                             paidDays = availableBalance;
-                            unpaidDays = totalRequestedDays - availableBalance;
+                            unpaidDays = weekdaysCount - availableBalance;
                             console.log(`🔄 Splitting: ${paidDays} paid days, ${unpaidDays} unpaid days`);
                         }
                     } else if (isUnpaidLeave) {
@@ -497,18 +523,18 @@ export default function AdminDashboard() {
                         console.log('📝 All days are unpaid leave');
                     } else if (isPaidLeave) {
                         // Other paid leave types (unlimited)
-                        paidDays = totalRequestedDays;
+                        paidDays = weekdaysCount; // Only weekdays count for balance
                         unpaidDays = 0;
-                        console.log('✅ Paid leave (unlimited balance)');
+                        console.log('✅ Paid leave (unlimited balance) - weekdays only');
                     }
                     console.log('🎯 LIMIT ENFORCEMENT COMPLETED - paidDays:', paidDays, 'unpaidDays:', unpaidDays);
                 } catch (limitError) {
                     console.error('❌ LEAVE LIMIT ENFORCEMENT ERROR:', limitError);
                     console.error('❌ Error stack:', limitError.stack);
                     // Fallback: treat all as paid leave
-                    paidDays = totalRequestedDays;
+                    paidDays = isPaidLeave ? weekdaysCount : totalRequestedDays;
                     unpaidDays = 0;
-                    console.log('⚠️ FALLBACK: Treating all days as paid leave due to error');
+                    console.log('⚠️ FALLBACK: Treating weekdays as paid leave due to error');
                 }
 
                 // Deduct only the paid portion from balance
@@ -589,13 +615,24 @@ export default function AdminDashboard() {
                     }
                 }
 
-                // Create shift records for each leave day - NOW HANDLING PAID vs UNPAID SPLIT
-                const shiftRecords = leaveDays.map((date, index) => {
-                    let entryTime, leaveTime, leaveType, workedHours, sundayHours, otHours;
+                // Create shift records for each leave day - EXCLUDING SUNDAYS FOR PAID LEAVE
+                const shiftRecords = leaveDays
+                    .filter((date) => {
+                        // For paid leave, exclude Sundays and public holidays completely
+                        if (isPaidLeave) {
+                            const dateObj = new Date(date);
+                            const isSunday = dateObj.getDay() === 0;
+                            const isHoliday = isPublicHoliday(dateObj);
+                            return !(isSunday || isHoliday); // Only include weekdays for paid leave
+                        }
+                        // For unpaid leave, include all days
+                        return true;
+                    })
+                    .map((date, index) => {
+                        let entryTime, leaveTime, leaveType, workedHours, sundayHours, otHours;
 
-                    // Determine if this day is paid or unpaid based on our split
-                    const isThisDayPaid = index < paidDays;
-                    const actualLeaveType = isThisDayPaid ? leaveRequest.leave_type : 'Unpaid Leave';
+                        // All remaining days are paid for paid leave types
+                        const actualLeaveType = leaveRequest.leave_type;
 
                     console.log(`Day ${index + 1}: ${date.toISOString().split('T')[0]} - ${isThisDayPaid ? 'PAID' : 'UNPAID'} (${actualLeaveType})`);
 
@@ -1134,6 +1171,8 @@ export default function AdminDashboard() {
     // Worker mutations
     const addWorkerMutation = useMutation({
         mutationFn: async (workerData) => {
+            console.log('🛠️ ADD WORKER MUTATION: Starting with data:', workerData);
+
             // Insert into worker_details table with all required fields
             const { error } = await supabase
                 .from('worker_details')
@@ -1154,14 +1193,24 @@ export default function AdminDashboard() {
                     medical_leave_limit: 14 // Default medical leave limit
                 }]);
 
-            if (error) throw error;
+            if (error) {
+                console.error('❌ ADD WORKER ERROR:', error);
+                throw error;
+            }
+
+            console.log('✅ ADD WORKER SUCCESS: Worker created');
         },
         onSuccess: () => {
+            console.log('🎉 ADD WORKER onSuccess: Closing dialog and refreshing');
             toast.success('Worker added successfully');
             setShowAddWorkerDialog(false);
             resetWorkerForm();
             // Invalidate queries to refresh data
             queryClient.invalidateQueries({ queryKey: ['shifts'] });
+        },
+        onError: (error) => {
+            console.error('💥 ADD WORKER onError:', error);
+            toast.error(`Failed to add worker: ${error.message}`);
         },
     });
 
@@ -1294,12 +1343,19 @@ export default function AdminDashboard() {
     };
 
     const handleAddWorker = () => {
+        console.log('Add Worker button clicked');
+        console.log('Form data:', workerFormData);
+
         if (!workerFormData.employee_id || !workerFormData.employee_name || !workerFormData.nric_fin ||
             !workerFormData.designation || !workerFormData.date_joined || !workerFormData.bank_account_number ||
-            !workerFormData.ot_rate_per_hour || !workerFormData.sun_ph_rate_per_day || !workerFormData.basic_salary_per_day) {
+            !workerFormData.ot_rate_per_hour || !workerFormData.sun_ph_rate_per_day || !workerFormData.basic_salary_per_day ||
+            !workerFormData.password) {
+            console.log('Validation failed - missing required fields');
             toast.error('Please fill in all required fields');
             return;
         }
+
+        console.log('Validation passed - calling mutation');
         addWorkerMutation.mutate(workerFormData);
     };
 
