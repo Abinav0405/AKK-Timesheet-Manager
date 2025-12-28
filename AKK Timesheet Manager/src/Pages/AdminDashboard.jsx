@@ -43,10 +43,12 @@ export default function AdminDashboard() {
     const [printStartDate, setPrintStartDate] = useState('');
     const [printEndDate, setPrintEndDate] = useState('');
     const [printWorkerId, setPrintWorkerId] = useState('');
+    const [printDeductions, setPrintDeductions] = useState([{ type: '', amount: '' }]);
     const [showPayslipDialog, setShowPayslipDialog] = useState(false);
     const [payslipWorkerId, setPayslipWorkerId] = useState('');
     const [payslipMonth, setPayslipMonth] = useState('');
     const [payslipSalaryPaidDate, setPayslipSalaryPaidDate] = useState('');
+    const [payslipDeductions, setPayslipDeductions] = useState([{ type: '', amount: '' }]);
     const [salaryReportMonth, setSalaryReportMonth] = useState('');
     const [salaryReportData, setSalaryReportData] = useState(null);
     const [statusFilter, setStatusFilter] = useState('all');
@@ -93,6 +95,7 @@ export default function AdminDashboard() {
         ot_rate_per_hour: '',
         sun_ph_rate_per_day: '',
         basic_salary_per_day: '',
+        basic_allowance_1: '150',
         password: '',
         annual_leave_limit: '10',
         medical_leave_limit: '14',
@@ -909,8 +912,8 @@ export default function AdminDashboard() {
                 const otPay = payableOtHours * worker.ot_rate_per_hour;
                 const allowance2 = excessOtHours * worker.ot_rate_per_hour; // Excess OT paid as Allowance 2
 
-                const sunPhPay = sunPhDays * (2 * dailyBasicSalary); // Sun/PH at 2x daily rate
-                const allowance1 = 150 * (basicDays / workingDays);
+                const sunPhPay = sunPhDays * worker.sun_ph_rate_per_day; // Sun/PH at individual rate from database
+                const allowance1 = (worker.basic_allowance_1 || 150) * (basicDays / workingDays);
                 const netSalary = basicPay + otPay + sunPhPay + allowance1 + allowance2;
 
                 // ROUNDING: Only round final currency values to 2 decimals
@@ -1227,6 +1230,7 @@ export default function AdminDashboard() {
                     ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
                     sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
                     basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
+                    basic_allowance_1: parseFloat(workerData.basic_allowance_1),
                     annual_leave_limit: parseInt(workerData.annual_leave_limit),
                     medical_leave_limit: parseInt(workerData.medical_leave_limit),
                     annual_leave_balance: parseInt(workerData.annual_leave_balance),
@@ -1320,6 +1324,7 @@ export default function AdminDashboard() {
                 ot_rate_per_hour: data.ot_rate_per_hour.toString(),
                 sun_ph_rate_per_day: data.sun_ph_rate_per_day.toString(),
                 basic_salary_per_day: data.basic_salary_per_day.toString(),
+                basic_allowance_1: data.basic_allowance_1?.toString() || '150',
                 annual_leave_limit: data.annual_leave_limit?.toString() || '10',
                 medical_leave_limit: data.medical_leave_limit?.toString() || '14',
                 annual_leave_balance: data.annual_leave_balance?.toString() || '10',
@@ -1461,7 +1466,7 @@ export default function AdminDashboard() {
         XLSX.writeFile(workbook, filename);
     };
 
-    const printTimesheetAndPayslip = async (workerId, month, year) => {
+    const printTimesheetAndPayslip = async (workerId, month, year, deductions = []) => {
         try {
             // Get all shifts for the worker in the specified month
             const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
@@ -1534,6 +1539,7 @@ export default function AdminDashboard() {
             // If we have shifts, fetch related data separately
             if (workerShifts && workerShifts.length > 0) {
                 const siteIds = [...new Set(workerShifts.map(shift => shift.site_id))];
+                const shiftIds = workerShifts.map(shift => shift.id);
 
                 // Fetch workers (we only need the name for the header)
                 const { data: workers } = await supabase
@@ -1548,7 +1554,7 @@ export default function AdminDashboard() {
                     .select('id, site_name')
                     .in('id', siteIds);
 
-                // Merge data into shifts
+                // Merge data into shifts (use lunch_start/lunch_end from shifts table)
                 workerShifts.forEach(shift => {
                     shift.workers = workers;
                     shift.sites = sites?.find(s => s.id === shift.site_id) || null;
@@ -1614,10 +1620,16 @@ export default function AdminDashboard() {
         const otPay = payableOtHours * workerDetails.ot_rate_per_hour;
         const allowance2 = excessOtHours * workerDetails.ot_rate_per_hour; // Excess OT paid as Allowance 2
 
-        const sunPhPay = totalSunPhDays * (2 * dailyBasicSalary); // Sun/PH at 2x daily rate
-        const allowance1 = 150 * (totalBasicDays / workingDaysData.working_days);
+        const sunPhPay = totalSunPhDays * workerDetails.sun_ph_rate_per_day; // Sun/PH at individual rate from database
+        const allowance1 = (workerDetails.basic_allowance_1 || 150) * (totalBasicDays / workingDaysData.working_days);
         const totalAdditions = basicPay + otPay + sunPhPay + allowance1 + allowance2;
-        const netTotalPay = totalAdditions;
+
+        // Calculate deductions total
+        const totalDeductions = deductions.reduce((sum, deduction) => {
+            return sum + (parseFloat(deduction.amount) || 0);
+        }, 0);
+
+        const netTotalPay = totalAdditions - totalDeductions;
 
         const printWindow = window.open('', '', 'height=800,width=1000');
         printWindow.document.write(`
@@ -1859,9 +1871,9 @@ export default function AdminDashboard() {
             shiftsByDate[dateKey].push(shift);
         });
 
-        // Generate all days in the month
+        // Generate all days in the month (up to 31 for standard format)
         const daysInMonth = new Date(year, month, 0).getDate();
-        for (let day = 1; day <= daysInMonth; day++) {
+        for (let day = 1; day <= 31; day++) {
             const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
             const dayShifts = shiftsByDate[dateStr] || [];
             const date = new Date(dateStr);
@@ -1897,7 +1909,10 @@ export default function AdminDashboard() {
                     lunch: (shift.lunch_start && shift.lunch_end)
                         ? `${formatTime(shift.lunch_start)} - ${formatTime(shift.lunch_end)}`
                         : '',
-                    site: shift.sites?.site_name || ''
+                    site: shift.sites?.site_name || '',
+                    basicHours: recalc.basicHours,
+                    sundayHours: recalc.sundayHours,
+                    otHours: recalc.otHours
                 });
             } else if (shift.leave_type) {
                 // This is a leave shift - set leave type but don't count as worked hours
@@ -1982,12 +1997,12 @@ export default function AdminDashboard() {
                     <td>${entryTimes}</td>
                     <td>${leaveTimes}</td>
                 <td>${lunchTimes}</td>
-                    <td>${totalOtHours.toFixed(2)}</td>
-                    <td>${totalBasicHours.toFixed(2)}</td>
-                    <td>${totalSundayHours.toFixed(2)}</td>
-                    <td>${totalWorkedHours.toFixed(2)}</td>
-                    <td>${basicDays.toFixed(2)}</td>
-                    <td>${sundayDays.toFixed(2)}</td>
+                    <td>${shiftDetails.length > 0 ? shiftDetails[0].otHours.toFixed(2) : '0.00'}</td>
+                    <td>${shiftDetails.length > 0 ? shiftDetails[0].basicHours.toFixed(2) : '0.00'}</td>
+                    <td>${shiftDetails.length > 0 ? shiftDetails[0].sundayHours.toFixed(2) : '0.00'}</td>
+                    <td>${(shiftDetails.length > 0 ? shiftDetails[0].basicHours + shiftDetails[0].sundayHours + shiftDetails[0].otHours : 0).toFixed(2)}</td>
+                    <td>${shiftDetails.length > 0 ? (shiftDetails[0].basicHours / 8).toFixed(2) : '0.00'}</td>
+                    <td>${shiftDetails.length > 0 ? (shiftDetails[0].sundayHours / 8).toFixed(2) : '0.00'}</td>
                     <td>${leaveType || ''}</td>
                     <td>${siteNames}</td>
                 </tr>
@@ -2106,6 +2121,20 @@ export default function AdminDashboard() {
                             <div class="salary-amount">$${totalAdditions.toFixed(2)}</div>
                         </div>
 
+                        ${deductions.filter(d => d.type && d.amount).map(deduction => `
+                        <div class="salary-row">
+                            <div class="salary-label">Deduction: ${deduction.type}</div>
+                            <div class="salary-amount">-$${parseFloat(deduction.amount).toFixed(2)}</div>
+                        </div>
+                        `).join('')}
+
+                        ${totalDeductions > 0 ? `
+                        <div class="salary-row">
+                            <div class="salary-label">Total Deductions</div>
+                            <div class="salary-amount">-$${totalDeductions.toFixed(2)}</div>
+                        </div>
+                        ` : ''}
+
                         <div class="salary-row">
                             <div class="salary-label">Net Total Pay</div>
                             <div class="salary-amount">$${netTotalPay.toFixed(2)}</div>
@@ -2189,11 +2218,17 @@ export default function AdminDashboard() {
         const basicDailyPay = workerDetails.basic_salary_per_day;
         const basicPay = basicDailyPay * basicDays;
         const otPay = totalOtHours * workerDetails.ot_rate_per_hour;
-        const sunPhPay = sunPhDays * (2 * basicDailyPay);
-        const allowance1 = 150 * (basicDays / workingDays);
+        const sunPhPay = sunPhDays * workerDetails.sun_ph_rate_per_day;
+        const allowance1 = workerDetails.basic_allowance_1 ? workerDetails.basic_allowance_1 * (basicDays / workingDays) : 0;
         const allowance2 = 0; // Not specified, set to 0 for now
         const totalAdditions = basicPay + otPay + sunPhPay + allowance1 + allowance2;
-        const netTotalPay = totalAdditions;
+
+        // Calculate deductions total
+        const totalDeductions = payslipDeductions.reduce((sum, deduction) => {
+            return sum + (parseFloat(deduction.amount) || 0);
+        }, 0);
+
+        const netTotalPay = totalAdditions - totalDeductions;
 
         const printWindow = window.open('', '', 'height=800,width=1000');
         printWindow.document.write(`
@@ -2399,6 +2434,20 @@ export default function AdminDashboard() {
                             <div class="salary-label">Total Additions</div>
                             <div class="salary-amount">$${totalAdditions.toFixed(2)}</div>
                         </div>
+
+                        ${payslipDeductions.filter(d => d.type && d.amount).map(deduction => `
+                        <div class="salary-row">
+                            <div class="salary-label">Deduction: ${deduction.type}</div>
+                            <div class="salary-amount">-$${parseFloat(deduction.amount).toFixed(2)}</div>
+                        </div>
+                        `).join('')}
+
+                        ${totalDeductions > 0 ? `
+                        <div class="salary-row">
+                            <div class="salary-label">Total Deductions</div>
+                            <div class="salary-amount">-$${totalDeductions.toFixed(2)}</div>
+                        </div>
+                        ` : ''}
 
                         <div class="salary-row">
                             <div class="salary-label">Net Total Pay</div>
@@ -3108,9 +3157,9 @@ export default function AdminDashboard() {
             <Dialog open={showPrintDialog} onOpenChange={setShowPrintDialog}>
                 <DialogContent>
                     <DialogHeader>
-                        <DialogTitle>Print Timesheet</DialogTitle>
+                        <DialogTitle>Print Timesheet & Payslip</DialogTitle>
                         <DialogDescription>
-                            Generate a monthly timesheet for a specific worker.
+                            Generate a monthly timesheet and payslip for a specific worker.
                         </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4">
@@ -3130,6 +3179,57 @@ export default function AdminDashboard() {
                                 onChange={(e) => setPrintStartDate(e.target.value)}
                             />
                         </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Deductions</label>
+                            {printDeductions.map((deduction, index) => (
+                                <div key={index} className="flex gap-2 items-end">
+                                    <div className="flex-1">
+                                        <Input
+                                            placeholder="Deduction Type"
+                                            value={deduction.type}
+                                            onChange={(e) => {
+                                                const newDeductions = [...printDeductions];
+                                                newDeductions[index].type = e.target.value;
+                                                setPrintDeductions(newDeductions);
+                                            }}
+                                        />
+                                    </div>
+                                    <div className="w-24">
+                                        <Input
+                                            type="number"
+                                            step="0.01"
+                                            placeholder="0.00"
+                                            value={deduction.amount}
+                                            onChange={(e) => {
+                                                const newDeductions = [...printDeductions];
+                                                newDeductions[index].amount = e.target.value;
+                                                setPrintDeductions(newDeductions);
+                                            }}
+                                        />
+                                    </div>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                            const newDeductions = printDeductions.filter((_, i) => i !== index);
+                                            setPrintDeductions(newDeductions.length > 0 ? newDeductions : [{ type: '', amount: '' }]);
+                                        }}
+                                        disabled={printDeductions.length === 1}
+                                    >
+                                        Remove
+                                    </Button>
+                                </div>
+                            ))}
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setPrintDeductions([...printDeductions, { type: '', amount: '' }])}
+                            >
+                                Add Deduction
+                            </Button>
+                        </div>
                     </div>
                     <DialogFooter>
                         <Button
@@ -3138,6 +3238,7 @@ export default function AdminDashboard() {
                                 setShowPrintDialog(false);
                                 setPrintWorkerId('');
                                 setPrintStartDate('');
+                                setPrintDeductions([{ type: '', amount: '' }]);
                             }}
                         >
                             Cancel
@@ -3146,10 +3247,11 @@ export default function AdminDashboard() {
                             onClick={() => {
                                 if (printWorkerId && printStartDate) {
                                     const [year, month] = printStartDate.split('-');
-                                    printTimesheetAndPayslip(printWorkerId, parseInt(month), parseInt(year));
+                                    printTimesheetAndPayslip(printWorkerId, parseInt(month), parseInt(year), printDeductions);
                                     setShowPrintDialog(false);
                                     setPrintWorkerId('');
                                     setPrintStartDate('');
+                                    setPrintDeductions([{ type: '', amount: '' }]);
                                 }
                             }}
                             className="bg-slate-700 hover:bg-slate-800"
@@ -3300,6 +3402,16 @@ export default function AdminDashboard() {
                                 placeholder="0.00"
                                 value={workerFormData.basic_salary_per_day}
                                 onChange={(e) => setWorkerFormData({ ...workerFormData, basic_salary_per_day: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Basic Allowance 1 per Month ($)</label>
+                            <Input
+                                type="number"
+                                step="0.01"
+                                placeholder="150.00"
+                                value={workerFormData.basic_allowance_1}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, basic_allowance_1: e.target.value })}
                             />
                         </div>
                         <div className="space-y-2">
@@ -3459,6 +3571,16 @@ export default function AdminDashboard() {
                                 placeholder="0.00"
                                 value={workerFormData.basic_salary_per_day}
                                 onChange={(e) => setWorkerFormData({ ...workerFormData, basic_salary_per_day: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Basic Allowance 1 per Month ($)</label>
+                            <Input
+                                type="number"
+                                step="0.01"
+                                placeholder="150.00"
+                                value={workerFormData.basic_allowance_1}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, basic_allowance_1: e.target.value })}
                             />
                         </div>
                         <div className="space-y-2">
@@ -3748,6 +3870,57 @@ export default function AdminDashboard() {
                                 value={payslipSalaryPaidDate}
                                 onChange={(e) => setPayslipSalaryPaidDate(e.target.value)}
                             />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Deductions</label>
+                            {payslipDeductions.map((deduction, index) => (
+                                <div key={index} className="flex gap-2 items-end">
+                                    <div className="flex-1">
+                                        <Input
+                                            placeholder="Deduction Type"
+                                            value={deduction.type}
+                                            onChange={(e) => {
+                                                const newDeductions = [...payslipDeductions];
+                                                newDeductions[index].type = e.target.value;
+                                                setPayslipDeductions(newDeductions);
+                                            }}
+                                        />
+                                    </div>
+                                    <div className="w-24">
+                                        <Input
+                                            type="number"
+                                            step="0.01"
+                                            placeholder="0.00"
+                                            value={deduction.amount}
+                                            onChange={(e) => {
+                                                const newDeductions = [...payslipDeductions];
+                                                newDeductions[index].amount = e.target.value;
+                                                setPayslipDeductions(newDeductions);
+                                            }}
+                                        />
+                                    </div>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                            const newDeductions = payslipDeductions.filter((_, i) => i !== index);
+                                            setPayslipDeductions(newDeductions.length > 0 ? newDeductions : [{ type: '', amount: '' }]);
+                                        }}
+                                        disabled={payslipDeductions.length === 1}
+                                    >
+                                        Remove
+                                    </Button>
+                                </div>
+                            ))}
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setPayslipDeductions([...payslipDeductions, { type: '', amount: '' }])}
+                            >
+                                Add Deduction
+                            </Button>
                         </div>
                     </div>
                     <DialogFooter>

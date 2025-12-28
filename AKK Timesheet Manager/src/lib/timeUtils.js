@@ -170,16 +170,12 @@ export function calculateDistance(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Format time for display (HH:mm)
+ * Format time for display (HH:mm) in UTC
  */
 export function formatTime(dateTime) {
     if (!dateTime) return '';
     const date = new Date(dateTime);
-    return date.toLocaleTimeString('en-SG', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-    });
+    return date.getUTCHours().toString().padStart(2, '0') + ':' + date.getUTCMinutes().toString().padStart(2, '0');
 }
 
 /**
