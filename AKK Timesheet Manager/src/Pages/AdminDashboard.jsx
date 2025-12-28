@@ -243,31 +243,45 @@ export default function AdminDashboard() {
 
             console.log('🔄 Days to restore:', daysToRestore, 'for', leaveRequest.leave_type);
 
-            // Restore leave balance if it was a paid leave
-            const paidLeaveTypes = [
-                'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
-                'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
-                'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
-                'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
-                'Volunteer Leave'
-            ];
-            const isPaidLeave = paidLeaveTypes.includes(leaveRequest.leave_type);
-            const isAnnualLeave = leaveRequest.leave_type === 'Annual Leave';
-            const isMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
+            // Only restore leave balance if the leave was previously approved
+            if (leaveRequest.status === 'approved') {
+                const paidLeaveTypes = [
+                    'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
+                    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+                    'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
+                    'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
+                    'Volunteer Leave'
+                ];
+                const isPaidLeave = paidLeaveTypes.includes(leaveRequest.leave_type);
+                const isAnnualLeave = leaveRequest.leave_type === 'Annual Leave';
+                const isMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
 
-            if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
-                console.log('💰 RESTORING LEAVE BALANCE - Worker:', leaveRequest.employee_id);
+                if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
+                    console.log('💰 RESTORING LEAVE BALANCE - Worker:', leaveRequest.employee_id, 'Status:', leaveRequest.status);
 
-                // Get current balance
-                const { data: currentBalanceData, error: balanceError } = await supabase
-                    .from('worker_details')
-                    .select(isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance')
-                    .eq('employee_id', leaveRequest.employee_id)
-                    .single();
+                    // Calculate weekdays only (excluding Sundays and holidays) to restore
+                    let daysToRestore = leaveDays.filter(date => {
+                        const dateObj = new Date(date);
+                        const isSunday = dateObj.getDay() === 0;
+                        const isHoliday = isPublicHoliday(dateObj);
+                        return !(isSunday || isHoliday);
+                    }).length;
 
-                if (balanceError) {
-                    console.error('❌ Failed to get current balance:', balanceError);
-                } else {
+                    if (leaveRequest.leave_duration?.includes('half_day')) {
+                        daysToRestore = daysToRestore * 0.5; // Half-day = 0.5 days
+                    }
+
+                    console.log('📅 Days to restore (weekdays only):', daysToRestore, 'for', leaveRequest.leave_type);
+
+                    // Get and update balance
+                    const { data: currentBalanceData, error: balanceError } = await supabase
+                        .from('worker_details')
+                        .select(isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance')
+                        .eq('employee_id', leaveRequest.employee_id)
+                        .single();
+
+                    if (balanceError) throw balanceError;
+
                     const currentBalance = isAnnualLeave ?
                         currentBalanceData.annual_leave_balance :
                         currentBalanceData.medical_leave_balance;
@@ -275,29 +289,16 @@ export default function AdminDashboard() {
 
                     console.log('🔢 Balance calculation:', currentBalance, '+', daysToRestore, '=', newBalance);
 
-        // Update balance
-        console.log('📤 UPDATING balance in database:', {
-            field: isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance',
-            oldValue: currentBalance,
-            newValue: newBalance,
-            employee_id: leaveRequest.employee_id
-        });
+                    const { error: updateError } = await supabase
+                        .from('worker_details')
+                        .update({
+                            [isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance']: newBalance
+                        })
+                        .eq('employee_id', leaveRequest.employee_id);
 
-        const { data: updateResult, error: updateError } = await supabase
-            .from('worker_details')
-            .update({
-                [isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance']: newBalance
-            })
-            .eq('employee_id', leaveRequest.employee_id)
-            .select(isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance');
+                    if (updateError) throw updateError;
 
-        if (updateError) {
-            console.error('❌ Failed to restore balance:', updateError);
-            throw updateError;
-        }
-
-        console.log('✅ Balance update result:', updateResult);
-        console.log('🎉 Balance successfully restored from', currentBalance, 'to', newBalance);
+                    console.log('✅ Balance successfully restored from', currentBalance, 'to', newBalance);
                 }
             }
 
@@ -598,7 +599,7 @@ export default function AdminDashboard() {
 
                         // Perform the update
                         console.log('🔄 EXECUTING BALANCE UPDATE - Employee ID:', leaveRequest.employee_id, 'Update Data:', updateData);
-                        const { error: updateError } = await supabase
+                        const { data: updateResult, error: updateError } = await supabase
                             .from('worker_details')
                             .update(updateData)
                             .eq('employee_id', leaveRequest.employee_id);
@@ -642,7 +643,7 @@ export default function AdminDashboard() {
                         // All remaining days are paid for paid leave types
                         const actualLeaveType = leaveRequest.leave_type;
 
-                    console.log(`Day ${index + 1}: ${date.toISOString().split('T')[0]} - ${isThisDayPaid ? 'PAID' : 'UNPAID'} (${actualLeaveType})`);
+                    console.log(`Day ${index + 1}: ${date.toISOString().split('T')[0]} - ${isPaidLeave ? 'PAID' : 'UNPAID'} (${actualLeaveType})`);
 
                     // Handle half-day vs full-day leaves
                     if (leaveRequest.leave_duration === 'half_day_morning') {
@@ -651,7 +652,7 @@ export default function AdminDashboard() {
                         leaveTime = date.toISOString().split('T')[0] + 'T12:00:00';
                         leaveType = actualLeaveType + '_HALF_MORNING';
 
-                        if (isThisDayPaid) {
+                        if (isPaidLeave) {
                             // PAID half-day leave - check if Sunday/Public Holiday (Sundays are NOT paid for leave)
                             const dateObj = new Date(date);
                             const isSunday = dateObj.getDay() === 0;
@@ -669,7 +670,7 @@ export default function AdminDashboard() {
                         leaveTime = date.toISOString().split('T')[0] + 'T16:00:00';
                         leaveType = actualLeaveType + '_HALF_AFTERNOON';
 
-                        if (isThisDayPaid) {
+                        if (isPaidLeave) {
                             // PAID half-day leave - check if Sunday/Public Holiday (Sundays are NOT paid for leave)
                             const dateObj = new Date(date);
                             const isSunday = dateObj.getDay() === 0;
@@ -687,7 +688,7 @@ export default function AdminDashboard() {
                         leaveTime = date.toISOString().split('T')[0] + 'T08:00:00';
                         leaveType = actualLeaveType;
 
-                        if (isThisDayPaid) {
+                        if (isPaidLeave) {
                             // PAID leave - check if Sunday/Public Holiday (Sundays are NOT paid for leave)
                             const dateObj = new Date(date);
                             const isSunday = dateObj.getDay() === 0;
@@ -738,95 +739,15 @@ export default function AdminDashboard() {
                     console.log('Successfully created leave shift records');
                 }
             }
-            // If rejected or deleted, restore leave balance
-            else if (status === 'rejected' || status === 'deleted') {
-                console.log('Restoring leave balance for', status, 'leave:', leaveRequest.id);
-
-                const paidLeaveTypes = [
-                    'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
-                    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
-                    'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
-                    'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
-                    'Volunteer Leave'
-                ];
-                const isPaidLeave = paidLeaveTypes.includes(leaveRequest.leave_type);
-                const isAnnualLeave = leaveRequest.leave_type === 'Annual Leave';
-                const isMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
-
-                // Calculate leave days to restore to balance (only for paid leave)
-                if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
-                    const leaveDays = [];
-                    const fromDate = new Date(leaveRequest.from_date);
-                    const toDate = new Date(leaveRequest.to_date);
-
-                    for (let date = new Date(fromDate); date <= toDate; date.setDate(date.getDate() + 1)) {
-                        leaveDays.push(new Date(date));
-                    }
-
-                    let daysToRestore = leaveDays.length;
-                    if (leaveRequest.leave_duration?.includes('half_day')) {
-                        daysToRestore = daysToRestore * 0.5; // Half-day = 0.5 days
-                    }
-
-                    console.log(`Restoring ${daysToRestore} days to ${isAnnualLeave ? 'annual' : 'medical'} leave balance`);
-
-                    // First get current balance
-                    const { data: currentBalanceData, error: fetchBalanceError } = await supabase
-                        .from('worker_details')
-                        .select(isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance')
-                        .eq('employee_id', leaveRequest.employee_id)
-                        .single();
-
-                    if (fetchBalanceError) {
-                        console.error('Error fetching current balance for restore:', fetchBalanceError);
-                    } else {
-                        const currentBalance = isAnnualLeave ? currentBalanceData.annual_leave_balance : currentBalanceData.medical_leave_balance;
-                        const newBalance = currentBalance + daysToRestore;
-
-                        const { error: balanceError } = await supabase
-                            .from('worker_details')
-                            .update({
-                                [isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance']: newBalance
-                            })
-                            .eq('employee_id', leaveRequest.employee_id);
-
-                        if (balanceError) {
-                            console.error('Error restoring leave balance:', balanceError);
-                        } else {
-                            console.log(`Successfully restored leave balance: ${currentBalance} → ${newBalance}`);
-                        }
-                    }
-
-                    if (balanceError) {
-                        console.error('Error restoring leave balance:', balanceError);
-                    } else {
-                        console.log(`Successfully restored ${daysToRestore} days to leave balance`);
-                    }
-                }
-
-                // Delete the shift records created for this leave
-                const { error: deleteShiftsError } = await supabase
-                    .from('shifts')
-                    .delete()
-                    .eq('worker_id', leaveRequest.employee_id)
-                    .neq('leave_type', null)
-                    .gte('work_date', leaveRequest.from_date)
-                    .lte('work_date', leaveRequest.to_date);
-
-                if (deleteShiftsError) {
-                    console.error('Error deleting leave shifts:', deleteShiftsError);
-                } else {
-                    console.log('Successfully deleted leave shift records');
-                }
-            }
         },
-        onSuccess: () => {
+        onSuccess: (data) => {
             // Invalidate all relevant queries to refresh data immediately
             queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
             queryClient.invalidateQueries({ queryKey: ['allLeaveRequests'] });
             queryClient.invalidateQueries({ queryKey: ['shifts'] });
             queryClient.invalidateQueries({ queryKey: ['workerData'] }); // Force balance refresh
             queryClient.invalidateQueries({ queryKey: ['workerLeaveHistory'] }); // Force history refresh
+            queryClient.invalidateQueries({ queryKey: ['workerLeaveHistory', data.employee_id] });
 
             toast.success('Leave request updated successfully - refreshing data...');
 
@@ -835,7 +756,7 @@ export default function AdminDashboard() {
                 console.log('🔄 Silent refresh of all data after leave approval...');
                 queryClient.invalidateQueries({ queryKey: ['workerData'] });
                 queryClient.invalidateQueries({ queryKey: ['workerLeaveHistory'] });
-                queryClient.invalidateQueries({ queryKey: ['workerLeaveHistory', leaveRequest.employee_id] });
+                queryClient.invalidateQueries({ queryKey: ['workerLeaveHistory', data.employee_id] });
                 queryClient.invalidateQueries({ queryKey: ['workerBalance'] });
                 queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
                 queryClient.invalidateQueries({ queryKey: ['allLeaveRequests'] });
@@ -1521,6 +1442,33 @@ export default function AdminDashboard() {
                 })));
             }
 
+            // Debug: Check all leave requests for this worker (including pending)
+            const { data: allLeaveRequests, error: leaveError } = await supabase
+                .from('leave_requests')
+                .select('*')
+                .eq('employee_id', workerId)
+                .order('created_at', { ascending: false });
+
+            if (leaveError) {
+                console.error('Error fetching leave requests:', leaveError);
+            } else {
+                console.log('All leave requests for worker (including pending):', allLeaveRequests?.length || 0);
+                if (allLeaveRequests && allLeaveRequests.length > 0) {
+                    allLeaveRequests.forEach(request => {
+                        console.log('Leave request:', {
+                            id: request.id,
+                            from_date: request.from_date,
+                            to_date: request.to_date,
+                            leave_type: request.leave_type,
+                            status: request.status,
+                            duration: request.leave_duration
+                        });
+                    });
+                } else {
+                    console.log('No leave requests found for this worker at all');
+                }
+            }
+
             // Get worker details for payslip
             const { data: workerDetails, error: workerError } = await supabase
                 .from('worker_details')
@@ -1930,10 +1878,11 @@ export default function AdminDashboard() {
                     site: shift.sites?.site_name || '',
                     basicHours: recalc.basicHours,
                     sundayHours: recalc.sundayHours,
-                    otHours: recalc.otHours
+                    otHours: recalc.otHours,
+                    isLeave: false
                 });
             } else if (shift.leave_type) {
-                // This is a leave shift - set leave type but don't count as worked hours
+                // This is a leave shift - set leave type and hours
                 hasLeaveShift = true;
 
                 const paidLeaveTypes = [
@@ -1967,37 +1916,51 @@ export default function AdminDashboard() {
                         totalOtHours = 0;
                         totalSundayHours = 0;
                     }
-    } else {
-        // Full-day leave
-        if (isPaidLeave) {
-            leaveType = shift.leave_type;
-            // Check if it's Sunday or public holiday - no pay for leave on these days
-            const dateObj = new Date(dateStr);
-            const isSunday = dateObj.getDay() === 0;
-            const isHoliday = isPublicHoliday(dateObj);
+                } else {
+                    // Full-day leave
+                    if (isPaidLeave) {
+                        leaveType = shift.leave_type;
+                        // Check if it's Sunday or public holiday - no pay for leave on these days
+                        const dateObj = new Date(dateStr);
+                        const isSunday = dateObj.getDay() === 0;
+                        const isHoliday = isPublicHoliday(dateObj);
 
-            totalBasicHours = (isSunday || isHoliday) ? 0 : 8; // 0 hours for Sunday/holiday, 8 for weekday
-            totalWorkedHours = 0; // No worked hours for leave days
-            totalOtHours = 0;
-            totalSundayHours = 0;
-        } else if (isUnpaidLeave) {
-            leaveType = shift.leave_type;
-            totalBasicHours = 0; // No entitlement for unpaid leave
-            totalWorkedHours = 0; // No worked hours for leave days
-            totalOtHours = 0;
-            totalSundayHours = 0;
-        }
-    }
+                        totalBasicHours = (isSunday || isHoliday) ? 0 : 8; // 0 hours for Sunday/holiday, 8 for weekday
+                        totalWorkedHours = 0; // No worked hours for leave days
+                        totalOtHours = 0;
+                        totalSundayHours = 0;
+                    } else if (isUnpaidLeave) {
+                        leaveType = shift.leave_type;
+                        totalBasicHours = 0; // No entitlement for unpaid leave
+                        totalWorkedHours = 0; // No worked hours for leave days
+                        totalOtHours = 0;
+                        totalSundayHours = 0;
+                    }
+                }
+
+                // Add leave shift to details for display
+                shiftDetails.push({
+                    entry: 'Leave',
+                    leave: 'Leave',
+                    lunch: '',
+                    site: '',
+                    basicHours: totalBasicHours,
+                    sundayHours: totalSundayHours,
+                    otHours: totalOtHours,
+                    isLeave: true
+                });
             }
         });
 
-        // If there are both work and leave shifts on the same day, prioritize leave
+        // If there are both work and leave shifts on the same day, prioritize leave display
         if (hasLeaveShift && leaveType) {
-            // Reset work shift details since this is primarily a leave day
-            shiftDetails = []; // Clear work shift details for leave days
+            // Keep only leave shift details for display
+            shiftDetails = shiftDetails.filter(s => s.isLeave);
             // For leave days, total worked hours should be 0 (no actual work done)
             totalWorkedHours = 0;
         } else {
+            // Remove leave flag for work shifts
+            shiftDetails = shiftDetails.map(s => ({ ...s, isLeave: undefined }));
             totalWorkedHours = totalBasicHours + totalSundayHours + totalOtHours;
         }
             const basicDays = totalBasicHours / 8;

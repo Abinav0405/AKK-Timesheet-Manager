@@ -380,20 +380,31 @@ export default function WorkerPortal() {
             return;
         }
 
-        // Calculate the number of days requested (accounting for half-days and excluding Sundays for paid leave)
-        const timeDiff = toDate.getTime() - fromDate.getTime();
-        let daysRequested = Math.ceil(timeDiff / (1000 * 3600 * 24)) + 1; // +1 to include both start and end dates
+        // Define paid leave types at the start (fix hoisting issue)
+        const paidLeaveTypes = ['Annual Leave', 'Sick Leave & Hospitalisation Leave'];
+        const isPaidLeave = paidLeaveTypes.includes(leaveRequestData.leave_type);
 
-        // For paid leave, count only weekdays (exclude Sundays)
-        if (paidLeaveTypes.includes(leaveRequestData.leave_type)) {
+        // Calculate the number of days requested (accounting for half-days and excluding Sundays for paid leave)
+        let daysRequested = 0;
+
+        // Count calendar days first
+        const timeDiff = toDate.getTime() - fromDate.getTime();
+        const totalCalendarDays = Math.ceil(timeDiff / (1000 * 3600 * 24)) + 1; // +1 to include both start and end dates
+
+        if (isPaidLeave) {
+            // For paid leave, count only weekdays (exclude Sundays and public holidays)
             let weekdayCount = 0;
             for (let date = new Date(fromDate); date <= toDate; date.setDate(date.getDate() + 1)) {
                 const isSunday = date.getDay() === 0;
-                if (!isSunday) {
+                const isHoliday = false; // You can add public holiday logic here if needed
+                if (!isSunday && !isHoliday) {
                     weekdayCount += 1;
                 }
             }
             daysRequested = weekdayCount;
+        } else {
+            // For unpaid leave, count all calendar days
+            daysRequested = totalCalendarDays;
         }
 
         // Adjust for half-day leaves
@@ -401,19 +412,23 @@ export default function WorkerPortal() {
             daysRequested = daysRequested * 0.5; // Half-day = 0.5 days
         }
 
-        // Check balance for paid leave types
-        const paidLeaveTypes = ['Annual Leave', 'Sick Leave & Hospitalisation Leave'];
-        const isPaidLeave = paidLeaveTypes.includes(leaveRequestData.leave_type);
-
+        // Check balance for paid leave types (stricter validation)
         if (isPaidLeave && workerBalance) {
             const availableBalance = leaveRequestData.leave_type === 'Annual Leave'
                 ? workerBalance.annual_leave_balance || 0
                 : workerBalance.medical_leave_balance || 0;
 
             if (daysRequested > availableBalance) {
+                const leaveTypeName = leaveRequestData.leave_type === 'Annual Leave' ? 'Annual Leave' : 'Medical Leave';
                 toast.error(
-                    `Insufficient leave balance. You have ${availableBalance} days available but requested ${daysRequested} days.`
+                    `Insufficient ${leaveTypeName} balance. You have ${availableBalance} days available but requested ${daysRequested} days.`
                 );
+                return;
+            }
+
+            // Additional check: don't allow requests that would leave less than 0 balance
+            if (availableBalance - daysRequested < 0) {
+                toast.error('This request would result in negative leave balance. Please reduce the number of days requested.');
                 return;
             }
         }
