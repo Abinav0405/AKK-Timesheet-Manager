@@ -170,7 +170,7 @@ export function calculateDistance(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Format time for display (HH:mm) in UTC
+ * Format time for display (HH:mm) in 24-hour format
  */
 export function formatTime(dateTime) {
     if (!dateTime) return '';

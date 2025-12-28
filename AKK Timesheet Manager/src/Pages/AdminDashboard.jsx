@@ -44,6 +44,7 @@ export default function AdminDashboard() {
     const [printEndDate, setPrintEndDate] = useState('');
     const [printWorkerId, setPrintWorkerId] = useState('');
     const [printDeductions, setPrintDeductions] = useState([{ type: '', amount: '' }]);
+    const [printSalaryPaidDate, setPrintSalaryPaidDate] = useState('');
     const [showPayslipDialog, setShowPayslipDialog] = useState(false);
     const [payslipWorkerId, setPayslipWorkerId] = useState('');
     const [payslipMonth, setPayslipMonth] = useState('');
@@ -867,17 +868,17 @@ export default function AdminDashboard() {
 
             // Process each worker
             const salaryData = await Promise.all(workers.map(async (worker) => {
-                // Get all shifts for the worker in the specified month
-                const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-                const endDate = new Date(parseInt(year), parseInt(month), 0).toISOString().split('T')[0];
+            // Get all shifts for the worker in the specified month
+            const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+            const endDate = new Date(parseInt(year), parseInt(month) + 1, 1).toISOString().split('T')[0];
 
-                const { data: workerShifts, error: shiftsError } = await supabase
-                    .from('shifts')
-                    .select('*')
-                    .eq('worker_id', worker.employee_id)
-                    .gte('work_date', startDate)
-                    .lte('work_date', endDate)
-                    .order('work_date', { ascending: true });
+            const { data: workerShifts, error: shiftsError } = await supabase
+                .from('shifts')
+                .select('*')
+                .eq('worker_id', worker.employee_id)
+                .gte('work_date', startDate)
+                .lt('work_date', endDate)
+                .order('work_date', { ascending: true });
 
                 if (shiftsError) throw shiftsError;
 
@@ -1189,6 +1190,7 @@ export default function AdminDashboard() {
                     ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
                     sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
                     basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
+                    basic_allowance_1: parseFloat(workerData.basic_allowance_1) || 150,
                     password_hash: workerData.password,
                     annual_leave_balance: 10, // Default annual leave balance
                     medical_leave_balance: 14, // Default medical leave balance
@@ -1466,11 +1468,11 @@ export default function AdminDashboard() {
         XLSX.writeFile(workbook, filename);
     };
 
-    const printTimesheetAndPayslip = async (workerId, month, year, deductions = []) => {
+    const printTimesheetAndPayslip = async (workerId, month, year, deductions = [], salaryPaidDate = '') => {
         try {
             // Get all shifts for the worker in the specified month
             const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-            const endDate = new Date(year, month, 0).toISOString().split('T')[0];
+            const endDate = new Date(year, month + 1, 1).toISOString().split('T')[0];
 
             console.log('Fetching shifts for worker:', workerId, 'month:', month, 'year:', year);
             console.log('Date range:', startDate, 'to', endDate);
@@ -1480,7 +1482,7 @@ export default function AdminDashboard() {
                 .select('*')
                 .eq('worker_id', workerId)
                 .gte('work_date', startDate)
-                .lte('work_date', endDate)
+                .lt('work_date', endDate)
                 .order('work_date', { ascending: true });
 
             if (error) {
@@ -2056,7 +2058,7 @@ export default function AdminDashboard() {
                                 <strong>Month & Year:</strong> ${String(month).padStart(2, '0')}/${year}<br>
                                 <strong>Date Joined:</strong> ${workerDetails.date_joined}<br>
                                 <strong>Bank Account:</strong> ${workerDetails.bank_account_number}<br>
-                                <strong>Salary Paid Date:</strong> Not specified
+                                <strong>Salary Paid Date:</strong> ${salaryPaidDate || 'Not specified'}
                             </div>
                         </div>
                     </div>
@@ -2094,14 +2096,14 @@ export default function AdminDashboard() {
                             <div class="salary-amount">${totalSunPhDays.toFixed(2)}</div>
                         </div>
 
-                        <div class="salary-row">
-                            <div class="salary-label">Allowance 1</div>
+                            <div class="salary-row">
+                            <div class="salary-label">Monthly Allowance</div>
                             <div class="salary-amount">$${allowance1.toFixed(2)}</div>
                         </div>
 
                         ${excessOtHours > 0 ? `
                         <div class="salary-row">
-                            <div class="salary-label">Allowance 2 (Excess OT)</div>
+                            <div class="salary-label">Incentive Allowance (Excess OT)</div>
                             <div class="salary-amount">$${allowance2.toFixed(2)}</div>
                         </div>
 
@@ -2110,8 +2112,8 @@ export default function AdminDashboard() {
                             <div class="salary-amount">${excessOtHours.toFixed(2)}</div>
                         </div>
                         ` : `
-                        <div class="salary-row">
-                            <div class="salary-label">Allowance 2</div>
+                            <div class="salary-row">
+                            <div class="salary-label">Incentive Allowance</div>
                             <div class="salary-amount">$${allowance2.toFixed(2)}</div>
                         </div>
                         `}
@@ -2241,122 +2243,188 @@ export default function AdminDashboard() {
                             padding: 15px;
                             background: white;
                             color: #333;
-                            line-height: 1.3;
-                            font-size: 11px;
+                            line-height: 1.4;
+                            font-size: 12px;
                         }
                         .header {
                             text-align: center;
-                            margin-bottom: 15px;
+                            margin-bottom: 20px;
                             border-bottom: 2px solid #333;
-                            padding-bottom: 10px;
+                            padding-bottom: 15px;
                         }
                         .company-name {
                             font-family: 'Calibri', 'Segoe UI', sans-serif;
                             font-weight: 700;
-                            font-size: 18px;
+                            font-size: 20px;
                             margin: 0;
                             color: #b22222;
                         }
                         .company-address {
                             font-family: 'Aptos Narrow', 'Segoe UI', sans-serif;
-                            font-size: 10px;
-                            margin: 5px 0 0 0;
+                            font-size: 11px;
+                            margin: 6px 0 0 0;
                             color: #666;
                         }
-                        .worker-info {
-                            margin: 10px 0;
-                            padding: 8px;
-                            background: #f8f9fa;
-                            border-radius: 5px;
-                            font-size: 10px;
+                        .top-section {
                             display: grid;
                             grid-template-columns: 1fr 1fr;
-                            gap: 10px;
+                            gap: 30px;
+                            margin: 20px 0;
                         }
-                        .worker-info div {
-                            margin-bottom: 4px;
-                        }
-                        .salary-breakdown {
-                            margin: 15px 0;
+                        .employee-details {
+                            background: #f8f9fa;
+                            padding: 15px;
+                            border-radius: 8px;
                             border: 1px solid #dee2e6;
-                            border-radius: 5px;
-                            overflow: hidden;
                         }
-                        .salary-header {
-                            background: #f8f9fa;
-                            padding: 8px;
-                            font-weight: 600;
+                        .section-title {
+                            font-weight: 700;
+                            font-size: 14px;
+                            margin-bottom: 12px;
+                            color: #495057;
                             border-bottom: 1px solid #dee2e6;
+                            padding-bottom: 8px;
                         }
-                        .salary-row {
-                            display: flex;
-                            padding: 6px 8px;
-                            border-bottom: 1px solid #dee2e6;
+                        .detail-row {
+                            margin-bottom: 8px;
+                            font-size: 11px;
                         }
-                        .salary-row:last-child {
-                            border-bottom: none;
-                            background: #f8f9fa;
+                        .detail-label {
                             font-weight: 600;
+                            color: #495057;
                         }
-                        .salary-label {
-                            flex: 1;
-                            font-weight: 500;
+                        .detail-value {
+                            color: #6c757d;
                         }
-                        .salary-amount {
-                            text-align: right;
-                            min-width: 80px;
+                        .bottom-section {
+                            display: grid;
+                            grid-template-columns: 1fr 1fr;
+                            gap: 30px;
+                            margin: 30px 0;
                         }
-                        .signature-section {
-                            margin-top: 20px;
+                        .earnings-section, .deductions-section {
+                            background: #f8f9fa;
+                            padding: 15px;
+                            border-radius: 8px;
+                            border: 1px solid #dee2e6;
+                        }
+                        .earnings-row, .deductions-row {
                             display: flex;
                             justify-content: space-between;
+                            padding: 6px 0;
+                            border-bottom: 1px solid #e9ecef;
+                            font-size: 11px;
+                        }
+                        .earnings-row:last-child, .deductions-row:last-child {
+                            border-bottom: none;
+                            font-weight: 700;
+                            font-size: 12px;
+                            color: #495057;
+                        }
+                        .item-label {
+                            font-weight: 500;
+                        }
+                        .item-amount {
+                            text-align: right;
+                            font-weight: 600;
+                        }
+                        .total-section {
+                            text-align: center;
+                            margin: 30px 0;
+                            padding: 20px;
+                            background: #ffffff;
+                            border: 2px solid #495057;
+                            border-radius: 8px;
+                        }
+                        .total-label {
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: #495057;
+                            margin-bottom: 8px;
+                        }
+                        .total-amount {
+                            font-size: 24px;
+                            font-weight: 900;
+                            color: #b22222;
+                        }
+                        .signature-section {
+                            margin-top: 40px;
+                            display: flex;
+                            justify-content: space-between;
+                            text-align: center;
                         }
                         .signature-line {
-                            border-bottom: 1px solid #333;
-                            width: 150px;
-                            height: 30px;
-                            margin-top: 20px;
+                            border-bottom: 2px solid #333;
+                            width: 180px;
+                            height: 40px;
+                            margin-top: 25px;
+                        }
+                        .signature-label {
+                            font-weight: 700;
+                            font-size: 12px;
+                            margin-top: 8px;
                         }
                         @media print {
                             body {
                                 background: white !important;
-                                padding: 10px !important;
+                                padding: 15px !important;
                                 margin: 0 !important;
-                                font-size: 10px !important;
+                                font-size: 11px !important;
                             }
                             .header {
-                                margin-bottom: 10px !important;
-                                padding-bottom: 8px !important;
+                                margin-bottom: 15px !important;
+                                padding-bottom: 12px !important;
                             }
                             .company-name {
-                                font-size: 16px !important;
+                                font-size: 18px !important;
                             }
                             .company-address {
-                                font-size: 9px !important;
+                                font-size: 10px !important;
                             }
-                            .worker-info {
-                                margin: 8px 0 !important;
-                                padding: 6px !important;
-                                font-size: 9px !important;
+                            .top-section {
+                                margin: 15px 0 !important;
                             }
-                            .salary-breakdown {
-                                margin: 10px 0 !important;
+                            .employee-details {
+                                padding: 12px !important;
                             }
-                            .salary-header {
-                                padding: 6px !important;
-                                font-size: 9px !important;
+                            .section-title {
+                                font-size: 12px !important;
+                                margin-bottom: 10px !important;
                             }
-                            .salary-row {
-                                padding: 4px 6px !important;
-                                font-size: 9px !important;
+                            .detail-row {
+                                margin-bottom: 6px !important;
+                                font-size: 10px !important;
+                            }
+                            .bottom-section {
+                                margin: 25px 0 !important;
+                            }
+                            .earnings-section, .deductions-section {
+                                padding: 12px !important;
+                            }
+                            .earnings-row, .deductions-row {
+                                padding: 5px 0 !important;
+                                font-size: 10px !important;
+                            }
+                            .total-section {
+                                margin: 25px 0 !important;
+                                padding: 15px !important;
+                            }
+                            .total-label {
+                                font-size: 14px !important;
+                            }
+                            .total-amount {
+                                font-size: 20px !important;
                             }
                             .signature-section {
-                                margin-top: 15px !important;
+                                margin-top: 35px !important;
                             }
                             .signature-line {
-                                width: 120px !important;
-                                height: 25px !important;
-                                margin-top: 15px !important;
+                                width: 160px !important;
+                                height: 35px !important;
+                                margin-top: 20px !important;
+                            }
+                            .signature-label {
+                                font-size: 11px !important;
                             }
                             @page {
                                 size: A4;
@@ -2369,100 +2437,142 @@ export default function AdminDashboard() {
                     <div class="header">
                         <h1 class="company-name">AKK ENGINEERING PTE. LTD.</h1>
                         <p class="company-address">15 Kaki Bukit Rd 4, #01-50, Singapore 417808</p>
-                        <h2 style="margin-top: 10px; color: #333; font-size: 14px;">Salary Slip</h2>
+                        <h2 style="margin-top: 10px; color: #333; font-size: 16px;">Salary Slip</h2>
                     </div>
 
-                    <div class="worker-info">
-                        <div>
-                            <strong>NRIC/FIN:</strong> ${workerDetails.nric_fin}<br>
-                            <strong>Employee ID:</strong> ${workerDetails.employee_id}<br>
-                            <strong>Employee Name:</strong> ${workerDetails.employee_name}<br>
-                            <strong>Designation:</strong> ${workerDetails.designation}
+                    <div class="top-section">
+                        <div class="employee-details">
+                            <div class="section-title">Employee Details</div>
+                            <div class="detail-row">
+                                <span class="detail-label">Employee Name:</span>
+                                <span class="detail-value">${workerDetails.employee_name}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Employee ID:</span>
+                                <span class="detail-value">${workerDetails.employee_id}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">NRIC/FIN:</span>
+                                <span class="detail-value">${workerDetails.nric_fin}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Designation:</span>
+                                <span class="detail-value">${workerDetails.designation}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Date Joined:</span>
+                                <span class="detail-value">${workerDetails.date_joined}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Bank Account:</span>
+                                <span class="detail-value">${workerDetails.bank_account_number}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Basic Salary (per day):</span>
+                                <span class="detail-value">$${workerDetails.basic_salary_per_day.toFixed(2)}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">OT Rate (per hour):</span>
+                                <span class="detail-value">$${workerDetails.ot_rate_per_hour.toFixed(2)}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Sunday/PH Rate (per day):</span>
+                                <span class="detail-value">$${workerDetails.sun_ph_rate_per_day.toFixed(2)}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Allowance 1:</span>
+                                <span class="detail-value">$${workerDetails.basic_allowance_1.toFixed(2)}</span>
+                            </div>
                         </div>
-                        <div>
-                            <strong>Month & Year:</strong> ${String(month).padStart(2, '0')}/${year}<br>
-                            <strong>Date Joined:</strong> ${workerDetails.date_joined}<br>
-                            <strong>Bank Account:</strong> ${workerDetails.bank_account_number}<br>
-                            <strong>Salary Paid Date:</strong> ${salaryPaidDate || 'Not specified'}
+
+                        <div class="employee-details">
+                            <div class="section-title">Salary Period</div>
+                            <div class="detail-row">
+                                <span class="detail-label">Month & Year:</span>
+                                <span class="detail-value">${String(month).padStart(2, '0')}/${year}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Salary Paid Date:</span>
+                                <span class="detail-value">${salaryPaidDate || 'Not specified'}</span>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="salary-breakdown">
-                        <div class="salary-header">Salary Breakdown</div>
-
-                        <div class="salary-row">
-                            <div class="salary-label">Basic Pay</div>
-                            <div class="salary-amount">$${basicPay.toFixed(2)}</div>
+                    <div class="bottom-section">
+                        <div class="earnings-section">
+                            <div class="section-title">Additions</div>
+                            <div class="earnings-row">
+                                <span class="item-label">Basic Days Worked</span>
+                                <span class="item-amount">${basicDays.toFixed(2)}</span>
+                            </div>
+                            <div class="earnings-row">
+                                <span class="item-label">Basic Pay</span>
+                                <span class="item-amount">$${basicPay.toFixed(2)}</span>
+                            </div>
+                            <div class="earnings-row">
+                                <span class="item-label">OT Hours</span>
+                                <span class="item-amount">${totalOtHours.toFixed(2)}</span>
+                            </div>
+                            <div class="earnings-row">
+                                <span class="item-label">OT Pay</span>
+                                <span class="item-amount">$${otPay.toFixed(2)}</span>
+                            </div>
+                            <div class="earnings-row">
+                                <span class="item-label">Sunday/PH Days</span>
+                                <span class="item-amount">${sunPhDays.toFixed(2)}</span>
+                            </div>
+                            <div class="earnings-row">
+                                <span class="item-label">Sunday/PH Pay</span>
+                                <span class="item-amount">$${sunPhPay.toFixed(2)}</span>
+                            </div>
+                            <div class="earnings-row">
+                                <span class="item-label">Allowance Total</span>
+                                <span class="item-amount">$${(allowance1 + allowance2).toFixed(2)}</span>
+                            </div>
+                            <div class="earnings-row">
+                                <span class="item-label">Total Additions</span>
+                                <span class="item-amount">$${totalAdditions.toFixed(2)}</span>
+                            </div>
                         </div>
 
-                        <div class="salary-row">
-                            <div class="salary-label">Basic Days</div>
-                            <div class="salary-amount">${basicDays.toFixed(2)}</div>
+                        <div class="deductions-section">
+                            <div class="section-title">Deductions</div>
+                            ${payslipDeductions.filter(d => d.type && d.amount).length > 0 ?
+                                payslipDeductions.filter(d => d.type && d.amount).map(deduction => `
+                                    <div class="deductions-row">
+                                        <span class="item-label">${deduction.type}</span>
+                                        <span class="item-amount">-$${parseFloat(deduction.amount).toFixed(2)}</span>
+                                    </div>
+                                `).join('') :
+                                '<div class="deductions-row"><span class="item-label">—</span><span class="item-amount">—</span></div>'
+                            }
+                            ${totalDeductions > 0 ? `
+                                <div class="deductions-row">
+                                    <span class="item-label">Total Deductions</span>
+                                    <span class="item-amount">-$${totalDeductions.toFixed(2)}</span>
+                                </div>
+                            ` : `
+                                <div class="deductions-row">
+                                    <span class="item-label">Total Deductions</span>
+                                    <span class="item-amount">$0.00</span>
+                                </div>
+                            `}
                         </div>
+                    </div>
 
-                        <div class="salary-row">
-                            <div class="salary-label">OT Pay</div>
-                            <div class="salary-amount">$${otPay.toFixed(2)}</div>
-                        </div>
-
-                        <div class="salary-row">
-                            <div class="salary-label">OT Hours</div>
-                            <div class="salary-amount">${totalOtHours.toFixed(2)}</div>
-                        </div>
-
-                        <div class="salary-row">
-                            <div class="salary-label">Sun/PH Pay</div>
-                            <div class="salary-amount">$${sunPhPay.toFixed(2)}</div>
-                        </div>
-
-                        <div class="salary-row">
-                            <div class="salary-label">Sun/PH Days</div>
-                            <div class="salary-amount">${sunPhDays.toFixed(2)}</div>
-                        </div>
-
-                        <div class="salary-row">
-                            <div class="salary-label">Allowance 1</div>
-                            <div class="salary-amount">$${allowance1.toFixed(2)}</div>
-                        </div>
-
-                        <div class="salary-row">
-                            <div class="salary-label">Allowance 2</div>
-                            <div class="salary-amount">$${allowance2.toFixed(2)}</div>
-                        </div>
-
-                        <div class="salary-row">
-                            <div class="salary-label">Total Additions</div>
-                            <div class="salary-amount">$${totalAdditions.toFixed(2)}</div>
-                        </div>
-
-                        ${payslipDeductions.filter(d => d.type && d.amount).map(deduction => `
-                        <div class="salary-row">
-                            <div class="salary-label">Deduction: ${deduction.type}</div>
-                            <div class="salary-amount">-$${parseFloat(deduction.amount).toFixed(2)}</div>
-                        </div>
-                        `).join('')}
-
-                        ${totalDeductions > 0 ? `
-                        <div class="salary-row">
-                            <div class="salary-label">Total Deductions</div>
-                            <div class="salary-amount">-$${totalDeductions.toFixed(2)}</div>
-                        </div>
-                        ` : ''}
-
-                        <div class="salary-row">
-                            <div class="salary-label">Net Total Pay</div>
-                            <div class="salary-amount">$${netTotalPay.toFixed(2)}</div>
-                        </div>
+                    <div class="total-section">
+                        <div class="total-label">Total Salary</div>
+                        <div class="total-amount">$${netTotalPay.toFixed(2)}</div>
                     </div>
 
                     <div class="signature-section">
                         <div>
                             <div class="signature-line"></div>
-                            <p><strong>Employee Signature</strong></p>
+                            <div class="signature-label">Director Signature</div>
                         </div>
                         <div>
                             <div class="signature-line"></div>
-                            <p><strong>Employer Signature</strong></p>
+                            <div class="signature-label">Employee Signature</div>
                         </div>
                     </div>
                 </body>
@@ -3061,8 +3171,8 @@ export default function AdminDashboard() {
                                                         <th className="border border-slate-200 px-3 py-2 text-right font-medium">OT Rate</th>
                                                         <th className="border border-slate-200 px-3 py-2 text-right font-medium">OT Pay</th>
                                                         <th className="border border-slate-200 px-3 py-2 text-right font-medium">Sun/PH Hours</th>
-                                                        <th className="border border-slate-200 px-3 py-2 text-right font-medium">Allowance 1</th>
-                                                        <th className="border border-slate-200 px-3 py-2 text-right font-medium">Allowance 2</th>
+                                                        <th className="border border-slate-200 px-3 py-2 text-right font-medium">Monthly Allowance</th>
+                                                        <th className="border border-slate-200 px-3 py-2 text-right font-medium">Incentive Allowance</th>
                                                         <th className="border border-slate-200 px-3 py-2 text-right font-medium">Net Salary</th>
                                                     </tr>
                                                 </thead>
@@ -3180,6 +3290,14 @@ export default function AdminDashboard() {
                             />
                         </div>
                         <div className="space-y-2">
+                            <label className="text-sm font-medium">Date of Salary Paid (Optional)</label>
+                            <Input
+                                type="date"
+                                value={printSalaryPaidDate}
+                                onChange={(e) => setPrintSalaryPaidDate(e.target.value)}
+                            />
+                        </div>
+                        <div className="space-y-2">
                             <label className="text-sm font-medium">Deductions</label>
                             {printDeductions.map((deduction, index) => (
                                 <div key={index} className="flex gap-2 items-end">
@@ -3247,10 +3365,11 @@ export default function AdminDashboard() {
                             onClick={() => {
                                 if (printWorkerId && printStartDate) {
                                     const [year, month] = printStartDate.split('-');
-                                    printTimesheetAndPayslip(printWorkerId, parseInt(month), parseInt(year), printDeductions);
+                                    printTimesheetAndPayslip(printWorkerId, parseInt(month), parseInt(year), printDeductions, printSalaryPaidDate);
                                     setShowPrintDialog(false);
                                     setPrintWorkerId('');
                                     setPrintStartDate('');
+                                    setPrintSalaryPaidDate('');
                                     setPrintDeductions([{ type: '', amount: '' }]);
                                 }
                             }}
@@ -3864,7 +3983,7 @@ export default function AdminDashboard() {
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Salary Paid Date</label>
+                            <label className="text-sm font-medium">Date of Salary Paid (Optional)</label>
                             <Input
                                 type="date"
                                 value={payslipSalaryPaidDate}
