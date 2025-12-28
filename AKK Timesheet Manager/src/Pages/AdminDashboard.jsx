@@ -37,8 +37,12 @@ export default function AdminDashboard() {
     const [dateFilter, setDateFilter] = useState('all');
     const [workerIdFilter, setWorkerIdFilter] = useState('');
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-    const [password, setPassword] = useState('');
-    const [passwordError, setPasswordError] = useState('');
+    const [deletePin, setDeletePin] = useState('');
+    const [deletePinError, setDeletePinError] = useState('');
+    const [showIndividualDeletePinDialog, setShowIndividualDeletePinDialog] = useState(false);
+    const [individualDeletePin, setIndividualDeletePin] = useState('');
+    const [individualDeletePinError, setIndividualDeletePinError] = useState('');
+    const [pendingDeleteShiftId, setPendingDeleteShiftId] = useState(null);
     const [showPrintDialog, setShowPrintDialog] = useState(false);
     const [printStartDate, setPrintStartDate] = useState('');
     const [printEndDate, setPrintEndDate] = useState('');
@@ -1265,11 +1269,23 @@ export default function AdminDashboard() {
     });
 
     const handleDeleteHistory = () => {
-        if (password === '1432') {
-            setPasswordError('');
+        if (deletePin === 'Kozhai@100') {
+            setDeletePinError('');
             deleteAllMutation.mutate();
         } else {
-            setPasswordError('Incorrect password');
+            setDeletePinError('Incorrect PIN');
+        }
+    };
+
+    const handleIndividualDelete = () => {
+        if (individualDeletePin === 'Kozhai@100') {
+            setIndividualDeletePinError('');
+            deleteShiftMutation.mutate(pendingDeleteShiftId);
+            setShowIndividualDeletePinDialog(false);
+            setIndividualDeletePin('');
+            setPendingDeleteShiftId(null);
+        } else {
+            setIndividualDeletePinError('Incorrect PIN');
         }
     };
 
@@ -2840,9 +2856,8 @@ export default function AdminDashboard() {
                                                                         size="sm"
                                                                         variant="destructive"
                                                                         onClick={() => {
-                                                                            if (window.confirm('Are you sure you want to delete this shift? This action cannot be undone.')) {
-                                                                                deleteShiftMutation.mutate(shift.id);
-                                                                            }
+                                                                            setPendingDeleteShiftId(shift.id);
+                                                                            setShowIndividualDeletePinDialog(true);
                                                                         }}
                                                                         disabled={deleteShiftMutation.isPending}
                                                                     >
@@ -3388,22 +3403,22 @@ export default function AdminDashboard() {
                     <DialogHeader>
                         <DialogTitle>Delete All History</DialogTitle>
                         <DialogDescription>
-                            This action cannot be undone. Please enter the password to confirm deletion of all shift history.
+                            This action cannot be undone. Please enter the PIN to confirm deletion of all shift history.
                         </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-2">
                         <Input
                             type="password"
-                            placeholder="Enter password"
-                            value={password}
+                            placeholder="Enter PIN"
+                            value={deletePin}
                             onChange={(e) => {
-                                setPassword(e.target.value);
-                                setPasswordError('');
+                                setDeletePin(e.target.value);
+                                setDeletePinError('');
                             }}
                             onKeyDown={(e) => e.key === 'Enter' && handleDeleteHistory}
                         />
-                        {passwordError && (
-                            <p className="text-sm text-red-600">{passwordError}</p>
+                        {deletePinError && (
+                            <p className="text-sm text-red-600">{deletePinError}</p>
                         )}
                     </div>
                     <DialogFooter>
@@ -3411,8 +3426,8 @@ export default function AdminDashboard() {
                             variant="outline"
                             onClick={() => {
                                 setShowDeleteDialog(false);
-                                setPassword('');
-                                setPasswordError('');
+                                setDeletePin('');
+                                setDeletePinError('');
                             }}
                         >
                             Cancel
@@ -3429,6 +3444,60 @@ export default function AdminDashboard() {
                                 </>
                             ) : (
                                 'Delete All'
+                            )}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Individual Shift Delete PIN Dialog */}
+            <Dialog open={showIndividualDeletePinDialog} onOpenChange={setShowIndividualDeletePinDialog}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Delete Shift</DialogTitle>
+                        <DialogDescription>
+                            This action cannot be undone. Please enter the PIN to confirm deletion of this shift.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-2">
+                        <Input
+                            type="password"
+                            placeholder="Enter PIN"
+                            value={individualDeletePin}
+                            onChange={(e) => {
+                                setIndividualDeletePin(e.target.value);
+                                setIndividualDeletePinError('');
+                            }}
+                            onKeyDown={(e) => e.key === 'Enter' && handleIndividualDelete}
+                        />
+                        {individualDeletePinError && (
+                            <p className="text-sm text-red-600">{individualDeletePinError}</p>
+                        )}
+                    </div>
+                    <DialogFooter>
+                        <Button
+                            variant="outline"
+                            onClick={() => {
+                                setShowIndividualDeletePinDialog(false);
+                                setIndividualDeletePin('');
+                                setIndividualDeletePinError('');
+                                setPendingDeleteShiftId(null);
+                            }}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            variant="destructive"
+                            onClick={handleIndividualDelete}
+                            disabled={deleteShiftMutation.isPending}
+                        >
+                            {deleteShiftMutation.isPending ? (
+                                <>
+                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                    Deleting...
+                                </>
+                            ) : (
+                                'Delete Shift'
                             )}
                         </Button>
                     </DialogFooter>
