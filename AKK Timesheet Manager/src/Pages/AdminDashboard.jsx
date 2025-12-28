@@ -29,6 +29,16 @@ import * as XLSX from 'xlsx';
 import { toast } from "sonner";
 import { sendBrowserNotification } from "@/lib/emailNotification";
 import { formatTime, formatDate, isSunday, isPublicHoliday, calculateShiftHours } from "@/lib/timeUtils";
+import {
+    calculateAge,
+    getCPFEmployeeRate,
+    getCPFEmployerRate,
+    calculateSINDA,
+    calculateSDL,
+    calculateCPFDeductions,
+    calculateAccumulatedTotals,
+    validateBirthday
+} from "@/lib/contributionCalculations";
 
 export default function AdminDashboard() {
     const navigate = useNavigate();
@@ -44,17 +54,21 @@ export default function AdminDashboard() {
     const [individualDeletePinError, setIndividualDeletePinError] = useState('');
     const [pendingDeleteShiftId, setPendingDeleteShiftId] = useState(null);
     const [showPrintDialog, setShowPrintDialog] = useState(false);
+    const [printWorkerTypeDialog, setPrintWorkerTypeDialog] = useState(false);
+    const [printSelectedWorkerType, setPrintSelectedWorkerType] = useState(''); // 'local' or 'foreign'
     const [printStartDate, setPrintStartDate] = useState('');
     const [printEndDate, setPrintEndDate] = useState('');
     const [printWorkerId, setPrintWorkerId] = useState('');
     const [printDeductions, setPrintDeductions] = useState([{ type: '', amount: '' }]);
     const [printSalaryPaidDate, setPrintSalaryPaidDate] = useState('');
+    const [printBonus, setPrintBonus] = useState('');
     const [showPayslipDialog, setShowPayslipDialog] = useState(false);
     const [payslipWorkerId, setPayslipWorkerId] = useState('');
     const [payslipMonth, setPayslipMonth] = useState('');
     const [payslipSalaryPaidDate, setPayslipSalaryPaidDate] = useState('');
     const [payslipDeductions, setPayslipDeductions] = useState([{ type: '', amount: '' }]);
     const [salaryReportMonth, setSalaryReportMonth] = useState('');
+    const [salaryReportWorkerType, setSalaryReportWorkerType] = useState('all'); // 'all', 'local', 'foreign'
     const [salaryReportData, setSalaryReportData] = useState(null);
     const [statusFilter, setStatusFilter] = useState('all');
     const [siteFilter, setSiteFilter] = useState('all');
@@ -83,9 +97,11 @@ export default function AdminDashboard() {
     });
 
     // Worker Information states
+    const [showWorkerTypeDialog, setShowWorkerTypeDialog] = useState(false);
     const [showAddWorkerDialog, setShowAddWorkerDialog] = useState(false);
     const [showEditWorkerDialog, setShowEditWorkerDialog] = useState(false);
     const [showDeleteWorkerDialog, setShowDeleteWorkerDialog] = useState(false);
+    const [selectedWorkerType, setSelectedWorkerType] = useState(''); // 'local' or 'foreign'
     const [editWorkerId, setEditWorkerId] = useState('');
     const [deleteWorkerId, setDeleteWorkerId] = useState('');
     const [deletePassword, setDeletePassword] = useState('');
@@ -105,8 +121,16 @@ export default function AdminDashboard() {
         annual_leave_limit: '10',
         medical_leave_limit: '14',
         annual_leave_balance: '10',
-        medical_leave_balance: '14'
+        medical_leave_balance: '14',
+        // Local worker specific fields
+        birthday: '',
+        employer_salary: ''
     });
+
+    // Calculated values for Local workers
+    const [calculatedCPFEmployee, setCalculatedCPFEmployee] = useState(0);
+    const [calculatedCPFEmployer, setCalculatedCPFEmployer] = useState(0);
+    const [calculatedSINDA, setCalculatedSINDA] = useState(0);
 
     const queryClient = useQueryClient();
     const adminEmail = sessionStorage.getItem('adminEmail');
@@ -772,11 +796,39 @@ export default function AdminDashboard() {
 
             const [year, month] = salaryReportMonth.split('-');
 
-            // Get all workers
-            const { data: workers, error: workersError } = await supabase
-                .from('worker_details')
-                .select('*')
-                .order('employee_id');
+            let workers = [];
+            let workersError = null;
+
+            // Query appropriate table based on worker type filter
+            if (salaryReportWorkerType === 'local') {
+                const result = await supabase
+                    .from('local_worker_details')
+                    .select('*')
+                    .order('employee_id');
+                workers = result.data;
+                workersError = result.error;
+            } else if (salaryReportWorkerType === 'foreign') {
+                const result = await supabase
+                    .from('worker_details')
+                    .select('*')
+                    .order('employee_id');
+                workers = result.data;
+                workersError = result.error;
+            } else {
+                // 'all' - query both tables and combine
+                const [localResult, foreignResult] = await Promise.all([
+                    supabase.from('local_worker_details').select('*').order('employee_id'),
+                    supabase.from('worker_details').select('*').order('employee_id')
+                ]);
+
+                if (localResult.error) workersError = localResult.error;
+                if (foreignResult.error && !workersError) workersError = foreignResult.error;
+
+                workers = [
+                    ...(localResult.data || []).map(w => ({ ...w, worker_type: 'local' })),
+                    ...(foreignResult.data || []).map(w => ({ ...w, worker_type: 'foreign' }))
+                ].sort((a, b) => a.employee_id.localeCompare(b.employee_id));
+            }
 
             if (workersError) throw workersError;
 
@@ -1100,41 +1152,91 @@ export default function AdminDashboard() {
     // Worker mutations
     const addWorkerMutation = useMutation({
         mutationFn: async (workerData) => {
-            console.log('🛠️ ADD WORKER MUTATION: Starting with data:', workerData);
+            console.log('🛠️ ADD WORKER MUTATION: Starting with data:', workerData, 'Worker type:', selectedWorkerType);
 
-            // Insert into worker_details table with all required fields
-            const { error } = await supabase
-                .from('worker_details')
-                .insert([{
-                    employee_id: workerData.employee_id,
-                    nric_fin: workerData.nric_fin,
-                    employee_name: workerData.employee_name,
-                    designation: workerData.designation,
-                    date_joined: workerData.date_joined,
-                    bank_account_number: workerData.bank_account_number,
-                    ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
-                    sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
-                    basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
-                    basic_allowance_1: parseFloat(workerData.basic_allowance_1) || 150,
-                    password_hash: workerData.password,
-                    annual_leave_balance: 10, // Default annual leave balance
-                    medical_leave_balance: 14, // Default medical leave balance
-                    annual_leave_limit: 10, // Default annual leave limit
-                    medical_leave_limit: 14 // Default medical leave limit
-                }]);
+            const baseWorkerData = {
+                employee_id: workerData.employee_id,
+                nric_fin: workerData.nric_fin,
+                employee_name: workerData.employee_name,
+                designation: workerData.designation,
+                date_joined: workerData.date_joined,
+                bank_account_number: workerData.bank_account_number,
+                ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
+                sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
+                basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
+                basic_allowance_1: parseFloat(workerData.basic_allowance_1) || 150,
+                password_hash: workerData.password,
+                annual_leave_balance: parseInt(workerData.annual_leave_balance) || 10,
+                medical_leave_balance: parseInt(workerData.medical_leave_balance) || 14,
+                annual_leave_limit: parseInt(workerData.annual_leave_limit) || 10,
+                medical_leave_limit: parseInt(workerData.medical_leave_limit) || 14
+            };
 
-            if (error) {
-                console.error('❌ ADD WORKER ERROR:', error);
-                throw error;
+            if (selectedWorkerType === 'local') {
+                // Validate local worker fields
+                if (!workerData.birthday || !workerData.employer_salary) {
+                    throw new Error('Birthday and Employer Salary are required for Local workers');
+                }
+
+                const birthdayValidation = validateBirthday(workerData.birthday);
+                if (!birthdayValidation.isValid) {
+                    throw new Error(birthdayValidation.error);
+                }
+
+                // Calculate CPF and SINDA values
+                const age = calculateAge(workerData.birthday);
+                const cpfEmployeeRate = getCPFEmployeeRate(age);
+                const cpfEmployerRate = getCPFEmployerRate(age);
+                const sindaAmount = calculateSINDA(parseFloat(workerData.employer_salary));
+
+                // Insert into local_worker_details table
+                const localWorkerData = {
+                    ...baseWorkerData,
+                    birthday: workerData.birthday,
+                    employer_salary: parseFloat(workerData.employer_salary),
+                    cpf_employee_contribution: cpfEmployeeRate,
+                    cpf_employer_contribution: cpfEmployerRate,
+                    sinda_contribution: sindaAmount
+                };
+
+                console.log('📝 Inserting Local worker data:', localWorkerData);
+
+                const { error } = await supabase
+                    .from('local_worker_details')
+                    .insert([localWorkerData]);
+
+                if (error) {
+                    console.error('❌ LOCAL WORKER INSERT ERROR:', error);
+                    throw error;
+                }
+
+                console.log('✅ LOCAL WORKER SUCCESS: Worker created in local_worker_details');
+
+            } else {
+                // Foreign worker - insert into worker_details table
+                console.log('📝 Inserting Foreign worker data:', baseWorkerData);
+
+                const { error } = await supabase
+                    .from('worker_details')
+                    .insert([baseWorkerData]);
+
+                if (error) {
+                    console.error('❌ FOREIGN WORKER INSERT ERROR:', error);
+                    throw error;
+                }
+
+                console.log('✅ FOREIGN WORKER SUCCESS: Worker created in worker_details');
             }
-
-            console.log('✅ ADD WORKER SUCCESS: Worker created');
         },
         onSuccess: () => {
             console.log('🎉 ADD WORKER onSuccess: Closing dialog and refreshing');
-            toast.success('Worker added successfully');
+            toast.success(`${selectedWorkerType === 'local' ? 'Local' : 'Foreign'} worker added successfully`);
             setShowAddWorkerDialog(false);
             resetWorkerForm();
+            setSelectedWorkerType(''); // Reset worker type
+            setCalculatedCPFEmployee(0);
+            setCalculatedCPFEmployer(0);
+            setCalculatedSINDA(0);
             // Invalidate queries to refresh data
             queryClient.invalidateQueries({ queryKey: ['shifts'] });
         },
@@ -1146,30 +1248,83 @@ export default function AdminDashboard() {
 
     const editWorkerMutation = useMutation({
         mutationFn: async ({ employee_id, workerData }) => {
-            const { error } = await supabase
-                .from('worker_details')
-                .update({
-                    nric_fin: workerData.nric_fin,
-                    employee_name: workerData.employee_name,
-                    designation: workerData.designation,
-                    date_joined: workerData.date_joined,
-                    bank_account_number: workerData.bank_account_number,
-                    ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
-                    sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
-                    basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
-                    basic_allowance_1: parseFloat(workerData.basic_allowance_1),
-                    annual_leave_limit: parseInt(workerData.annual_leave_limit),
-                    medical_leave_limit: parseInt(workerData.medical_leave_limit),
-                    annual_leave_balance: parseInt(workerData.annual_leave_balance),
-                    medical_leave_balance: parseInt(workerData.medical_leave_balance)
-                })
-                .eq('employee_id', employee_id);
-            if (error) throw error;
+            console.log('🛠️ EDIT WORKER MUTATION: Starting with data:', workerData, 'Worker type:', selectedWorkerType);
+
+            const baseUpdateData = {
+                nric_fin: workerData.nric_fin,
+                employee_name: workerData.employee_name,
+                designation: workerData.designation,
+                date_joined: workerData.date_joined,
+                bank_account_number: workerData.bank_account_number,
+                ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
+                sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
+                basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
+                basic_allowance_1: parseFloat(workerData.basic_allowance_1),
+                annual_leave_limit: parseInt(workerData.annual_leave_limit),
+                medical_leave_limit: parseInt(workerData.medical_leave_limit),
+                annual_leave_balance: parseInt(workerData.annual_leave_balance),
+                medical_leave_balance: parseInt(workerData.medical_leave_balance)
+            };
+
+            if (selectedWorkerType === 'local') {
+                // Update local worker - recalculate CPF and SINDA
+                const age = calculateAge(workerData.birthday);
+                const cpfEmployeeRate = getCPFEmployeeRate(age);
+                const cpfEmployerRate = getCPFEmployerRate(age);
+                const sindaAmount = calculateSINDA(parseFloat(workerData.employer_salary));
+
+                const localUpdateData = {
+                    ...baseUpdateData,
+                    birthday: workerData.birthday,
+                    employer_salary: parseFloat(workerData.employer_salary),
+                    cpf_employee_contribution: cpfEmployeeRate,
+                    cpf_employer_contribution: cpfEmployerRate,
+                    sinda_contribution: sindaAmount
+                };
+
+                console.log('📝 Updating Local worker data:', localUpdateData);
+
+                const { error } = await supabase
+                    .from('local_worker_details')
+                    .update(localUpdateData)
+                    .eq('employee_id', employee_id);
+
+                if (error) {
+                    console.error('❌ LOCAL WORKER UPDATE ERROR:', error);
+                    throw error;
+                }
+
+                console.log('✅ LOCAL WORKER UPDATE SUCCESS');
+
+            } else {
+                // Update foreign worker
+                console.log('📝 Updating Foreign worker data:', baseUpdateData);
+
+                const { error } = await supabase
+                    .from('worker_details')
+                    .update(baseUpdateData)
+                    .eq('employee_id', employee_id);
+
+                if (error) {
+                    console.error('❌ FOREIGN WORKER UPDATE ERROR:', error);
+                    throw error;
+                }
+
+                console.log('✅ FOREIGN WORKER UPDATE SUCCESS');
+            }
         },
         onSuccess: () => {
-            toast.success('Worker updated successfully');
+            toast.success(`${selectedWorkerType === 'local' ? 'Local' : 'Foreign'} worker updated successfully`);
             setShowEditWorkerDialog(false);
             resetWorkerForm();
+            setSelectedWorkerType(''); // Reset worker type
+            setCalculatedCPFEmployee(0);
+            setCalculatedCPFEmployer(0);
+            setCalculatedSINDA(0);
+        },
+        onError: (error) => {
+            console.error('💥 EDIT WORKER onError:', error);
+            toast.error(`Failed to update worker: ${error.message}`);
         },
     });
 
@@ -1234,7 +1389,7 @@ export default function AdminDashboard() {
 
     const handleAddWorkerClick = () => {
         resetWorkerForm();
-        setShowAddWorkerDialog(true);
+        setShowWorkerTypeDialog(true);
     };
 
     const handleEditWorkerClick = async () => {
@@ -1242,48 +1397,132 @@ export default function AdminDashboard() {
         if (!employeeId) return;
 
         try {
-            const { data, error } = await supabase
-                .from('worker_details')
+            // Check both tables to find the worker
+            let workerData = null;
+            let workerType = '';
+
+            // First check local_worker_details
+            const { data: localWorker, error: localError } = await supabase
+                .from('local_worker_details')
                 .select('*')
                 .eq('employee_id', employeeId.trim())
                 .single();
 
-            if (error || !data) {
-                toast.error('Worker not found');
+            if (!localError && localWorker) {
+                workerData = localWorker;
+                workerType = 'local';
+            } else {
+                // Check worker_details for foreign workers
+                const { data: foreignWorker, error: foreignError } = await supabase
+                    .from('worker_details')
+                    .select('*')
+                    .eq('employee_id', employeeId.trim())
+                    .single();
+
+                if (!foreignError && foreignWorker) {
+                    workerData = foreignWorker;
+                    workerType = 'foreign';
+                }
+            }
+
+            if (!workerData) {
+                toast.error('Worker not found in either local or foreign worker tables');
                 return;
             }
 
+            setSelectedWorkerType(workerType);
             setWorkerFormData({
-                employee_id: data.employee_id,
-                nric_fin: data.nric_fin,
-                employee_name: data.employee_name,
-                designation: data.designation,
-                date_joined: data.date_joined,
-                bank_account_number: data.bank_account_number,
-                ot_rate_per_hour: data.ot_rate_per_hour.toString(),
-                sun_ph_rate_per_day: data.sun_ph_rate_per_day.toString(),
-                basic_salary_per_day: data.basic_salary_per_day.toString(),
-                basic_allowance_1: data.basic_allowance_1?.toString() || '150',
-                annual_leave_limit: data.annual_leave_limit?.toString() || '10',
-                medical_leave_limit: data.medical_leave_limit?.toString() || '14',
-                annual_leave_balance: data.annual_leave_balance?.toString() || '10',
-                medical_leave_balance: data.medical_leave_balance?.toString() || '14'
+                employee_id: workerData.employee_id,
+                nric_fin: workerData.nric_fin,
+                employee_name: workerData.employee_name,
+                designation: workerData.designation,
+                date_joined: workerData.date_joined,
+                bank_account_number: workerData.bank_account_number,
+                ot_rate_per_hour: workerData.ot_rate_per_hour.toString(),
+                sun_ph_rate_per_day: workerData.sun_ph_rate_per_day.toString(),
+                basic_salary_per_day: workerData.basic_salary_per_day.toString(),
+                basic_allowance_1: workerData.basic_allowance_1?.toString() || '150',
+                annual_leave_limit: workerData.annual_leave_limit?.toString() || '10',
+                medical_leave_limit: workerData.medical_leave_limit?.toString() || '14',
+                annual_leave_balance: workerData.annual_leave_balance?.toString() || '10',
+                medical_leave_balance: workerData.medical_leave_balance?.toString() || '14',
+                // Local worker specific fields
+                birthday: workerData.birthday || '',
+                employer_salary: workerData.employer_salary?.toString() || ''
             });
+
+            // Pre-calculate for Local workers
+            if (workerType === 'local' && workerData.birthday && workerData.employer_salary) {
+                const age = calculateAge(workerData.birthday);
+                const cpfEmployee = getCPFEmployeeRate(age);
+                const cpfEmployer = getCPFEmployerRate(age);
+                const sinda = calculateSINDA(parseFloat(workerData.employer_salary));
+
+                setCalculatedCPFEmployee(cpfEmployee);
+                setCalculatedCPFEmployer(cpfEmployer);
+                setCalculatedSINDA(sinda);
+            }
+
             setEditWorkerId(employeeId.trim());
             setShowEditWorkerDialog(true);
         } catch (error) {
+            console.error('Error fetching worker data:', error);
             toast.error('Error fetching worker data');
         }
     };
 
-    const handleDeleteWorkerClick = () => {
+    const handleDeleteWorkerClick = async () => {
         const employeeId = prompt('Enter Employee ID to delete:');
         if (!employeeId) return;
 
-        setDeleteWorkerId(employeeId.trim());
-        setDeletePassword('');
-        setDeletePasswordError('');
-        setShowDeleteWorkerDialog(true);
+        try {
+            // Check both tables to find the worker and determine type
+            let workerData = null;
+            let workerType = '';
+
+            // First check local_worker_details
+            const { data: localWorker, error: localError } = await supabase
+                .from('local_worker_details')
+                .select('employee_id, employee_name')
+                .eq('employee_id', employeeId.trim())
+                .single();
+
+            if (!localError && localWorker) {
+                workerData = localWorker;
+                workerType = 'local';
+            } else {
+                // Check worker_details for foreign workers
+                const { data: foreignWorker, error: foreignError } = await supabase
+                    .from('worker_details')
+                    .select('employee_id, employee_name')
+                    .eq('employee_id', employeeId.trim())
+                    .single();
+
+                if (!foreignError && foreignWorker) {
+                    workerData = foreignWorker;
+                    workerType = 'foreign';
+                }
+            }
+
+            if (!workerData) {
+                toast.error('Worker not found in either local or foreign worker tables');
+                return;
+            }
+
+            // Confirm deletion with worker details
+            const confirmMessage = `Are you sure you want to delete ${workerType === 'local' ? 'Local' : 'Foreign'} worker "${workerData.employee_name}" (ID: ${workerData.employee_id})? This action cannot be undone.`;
+            if (!window.confirm(confirmMessage)) {
+                return;
+            }
+
+            setDeleteWorkerId(employeeId.trim());
+            setDeletePassword('');
+            setDeletePasswordError('');
+            setShowDeleteWorkerDialog(true);
+        } catch (error) {
+            console.error('Error checking worker:', error);
+            toast.error('Error checking worker details');
+        }
     };
 
     const handleAddWorker = () => {
@@ -1469,19 +1708,37 @@ export default function AdminDashboard() {
                 }
             }
 
-            // Get worker details for payslip
-            const { data: workerDetails, error: workerError } = await supabase
-                .from('worker_details')
+            // Get worker details for payslip - check both tables
+            let workerDetails = null;
+            let workerType = 'foreign';
+
+            // First try local_worker_details
+            const { data: localWorker, error: localError } = await supabase
+                .from('local_worker_details')
                 .select('*')
                 .eq('employee_id', workerId)
                 .single();
 
-            if (workerError) {
-                console.error('Error fetching worker details:', workerError);
-                throw workerError;
+            if (!localError && localWorker) {
+                workerDetails = localWorker;
+                workerType = 'local';
+            } else {
+                // Try worker_details for foreign workers
+                const { data: foreignWorker, error: foreignError } = await supabase
+                    .from('worker_details')
+                    .select('*')
+                    .eq('employee_id', workerId)
+                    .single();
+
+                if (foreignError) {
+                    console.error('Error fetching worker details from both tables:', foreignError);
+                    throw foreignError;
+                }
+                workerDetails = foreignWorker;
+                workerType = 'foreign';
             }
 
-            console.log('Worker details:', workerDetails);
+            console.log('Worker details:', workerDetails, 'Worker type:', workerType);
 
             // Get working days for the month
             let workingDaysData;
@@ -1588,7 +1845,8 @@ export default function AdminDashboard() {
 
         const sunPhPay = totalSunPhDays * workerDetails.sun_ph_rate_per_day; // Sun/PH at individual rate from database
         const allowance1 = (workerDetails.basic_allowance_1 || 150) * (totalBasicDays / workingDaysData.working_days);
-        const totalAdditions = basicPay + otPay + sunPhPay + allowance1 + allowance2;
+        const bonusAmount = parseFloat(printBonus) || 0;
+        const totalAdditions = basicPay + otPay + sunPhPay + allowance1 + allowance2 + bonusAmount;
 
         // Calculate deductions total
         const totalDeductions = deductions.reduce((sum, deduction) => {
@@ -1596,6 +1854,94 @@ export default function AdminDashboard() {
         }, 0);
 
         const netTotalPay = totalAdditions - totalDeductions;
+
+        // Calculate CPF, SINDA, SDL for Local workers
+        let cpfEmployeeDeduction = 0;
+        let cpfEmployerContribution = 0;
+        let sindaDeduction = 0;
+        let sdlContribution = 0;
+
+        if (workerType === 'local') {
+            // Calculate CPF Employee deduction (from employee's salary)
+            cpfEmployeeDeduction = calculateCPFDeductions(totalAdditions, workerDetails.cpf_employee_contribution, 0).employeeDeduction;
+
+            // Calculate CPF Employer contribution (from employer salary, not deducted)
+            cpfEmployerContribution = calculateCPFDeductions(workerDetails.employer_salary, 0, workerDetails.cpf_employer_contribution).employerContribution;
+
+            // Calculate SINDA deduction from employee's total additions
+            sindaDeduction = calculateSINDA(totalAdditions);
+
+            // Calculate SDL contribution (not deducted)
+            sdlContribution = calculateSDL(workerDetails.employer_salary);
+
+            console.log('Local worker calculations:', {
+                cpfEmployeeDeduction,
+                cpfEmployerContribution,
+                sindaDeduction,
+                sdlContribution
+            });
+        }
+
+        // Calculate accumulated totals for Local workers
+        let totalAccumulatedSalary = 0;
+        let accumulatedCPFEmployee = 0;
+        let accumulatedEmployerCPF = 0;
+
+        if (workerType === 'local') {
+            try {
+                // Get all payslip history for this worker
+                const { data: payslipHistory, error: historyError } = await supabase
+                    .from('payslip_history')
+                    .select('total_additions, cpf_employee_deduction, cpf_employer_contribution')
+                    .eq('worker_id', workerId)
+                    .order('payslip_month', { ascending: true });
+
+                if (!historyError && payslipHistory) {
+                    payslipHistory.forEach(payslip => {
+                        totalAccumulatedSalary += payslip.total_additions || 0;
+                        accumulatedCPFEmployee += payslip.cpf_employee_deduction || 0;
+                        accumulatedEmployerCPF += payslip.cpf_employer_contribution || 0;
+                    });
+                }
+
+                console.log('Accumulated totals calculated:', {
+                    totalAccumulatedSalary,
+                    accumulatedCPFEmployee,
+                    accumulatedEmployerCPF
+                });
+            } catch (error) {
+                console.error('Error calculating accumulated totals:', error);
+            }
+        }
+
+        // Store payslip data in payslip_history for accumulation tracking
+        if (printSalaryPaidDate) {
+            const payslipHistoryData = {
+                worker_id: workerId,
+                worker_type: workerType,
+                payslip_month: `${year}-${String(month).padStart(2, '0')}-01`,
+                payslip_year: year,
+                basic_pay: basicPay,
+                ot_pay: otPay,
+                sun_ph_pay: sunPhPay,
+                allowance1: allowance1,
+                allowance2: allowance2,
+                total_additions: totalAdditions,
+                cpf_employee_deduction: cpfEmployeeDeduction,
+                sinda_deduction: sindaDeduction,
+                cpf_employer_contribution: cpfEmployerContribution,
+                sdl_contribution: sdlContribution,
+                total_deductions: cpfEmployeeDeduction + sindaDeduction, // Only deducted amounts
+                net_pay: netTotalPay
+            };
+
+            try {
+                await supabase.from('payslip_history').insert([payslipHistoryData]);
+                console.log('Payslip data stored in history table');
+            } catch (error) {
+                console.error('Failed to store payslip history:', error);
+            }
+        }
 
         const printWindow = window.open('', '', 'height=800,width=1000');
         printWindow.document.write(`
@@ -2004,16 +2350,68 @@ export default function AdminDashboard() {
                         <p><strong>Sun/PH Days:</strong> ${totalSunPhDays.toFixed(2)}</p>
                     </div>
 
-                    <div class="signature-section">
-                        <div>
-                            <div class="signature-line"></div>
-                            <p><strong>Worker Signature</strong></p>
+                        ${workerType === 'local' ? `
+                        <!-- PAGE BREAK FOR ACCUMULATED TOTALS -->
+                        <div class="page-break"></div>
+
+                        <div class="header">
+                            <h1 class="company-name">AKK ENGINEERING PTE. LTD.</h1>
+                            <p class="company-address">15 Kaki Bukit Rd 4, #01-50, Singapore 417808</p>
+                            <h2 style="margin-top: 10px; color: #333; font-size: 14px;">Accumulated Contributions Summary</h2>
                         </div>
-                        <div>
-                            <div class="signature-line"></div>
-                            <p><strong>Director Signature</strong></p>
+
+                        <div class="worker-info">
+                            <strong>Worker Name:</strong> ${workerName}<br>
+                            <strong>Worker ID:</strong> ${workerId}<br>
+                            <strong>As of Month/Year:</strong> ${String(month).padStart(2, '0')}/${year}
                         </div>
-                    </div>
+
+                        <div class="salary-breakdown">
+                            <div class="salary-header">Year-to-Date Totals</div>
+
+                            <div class="salary-row">
+                                <div class="salary-label">Total Accumulated Salary</div>
+                                <div class="salary-amount">$${totalAccumulatedSalary.toFixed(2)}</div>
+                            </div>
+
+                            <div class="salary-row">
+                                <div class="salary-label">Accumulated CPF Employee Contributions</div>
+                                <div class="salary-amount">$${accumulatedCPFEmployee.toFixed(2)}</div>
+                            </div>
+
+                            <div class="salary-row">
+                                <div class="salary-label">Accumulated CPF Employer Contributions</div>
+                                <div class="salary-amount">$${accumulatedEmployerCPF.toFixed(2)}</div>
+                            </div>
+
+                            <div class="salary-row">
+                                <div class="salary-label">Total CPF Accumulated</div>
+                                <div class="salary-amount">$${(accumulatedCPFEmployee + accumulatedEmployerCPF).toFixed(2)}</div>
+                            </div>
+                        </div>
+
+                        <div class="signature-section">
+                            <div>
+                                <div class="signature-line"></div>
+                                <p><strong>Director Signature</strong></p>
+                            </div>
+                            <div>
+                                <div class="signature-line"></div>
+                                <p><strong>Employee Signature</strong></p>
+                            </div>
+                        </div>
+                        ` : ''}
+
+                        <div class="signature-section">
+                            <div>
+                                <div class="signature-line"></div>
+                                <p><strong>Worker Signature</strong></p>
+                            </div>
+                            <div>
+                                <div class="signature-line"></div>
+                                <p><strong>Director Signature</strong></p>
+                            </div>
+                        </div>
 
                     <!-- PAGE BREAK -->
                     <div class="page-break"></div>
@@ -2097,10 +2495,39 @@ export default function AdminDashboard() {
                         </div>
                         `}
 
+                        ${workerType === 'local' ? `
+                        <div class="salary-row">
+                            <div class="salary-label">SDL Contribution</div>
+                            <div class="salary-amount">$${sdlContribution.toFixed(2)}</div>
+                        </div>
+                        ` : ''}
+
+                        ${bonusAmount > 0 ? `
+                        <div class="salary-row">
+                            <div class="salary-label">Bonus</div>
+                            <div class="salary-amount">$${bonusAmount.toFixed(2)}</div>
+                        </div>
+                        ` : ''}
+
                         <div class="salary-row">
                             <div class="salary-label">Total Additions</div>
                             <div class="salary-amount">$${totalAdditions.toFixed(2)}</div>
                         </div>
+
+                        ${workerType === 'local' ? `
+                        <div class="salary-row">
+                            <div class="salary-label">CPF Employee Contribution</div>
+                            <div class="salary-amount">-$${cpfEmployeeDeduction.toFixed(2)}</div>
+                        </div>
+                        <div class="salary-row">
+                            <div class="salary-label">SINDA Contribution</div>
+                            <div class="salary-amount">-$${sindaDeduction.toFixed(2)}</div>
+                        </div>
+                        <div class="salary-row">
+                            <div class="salary-label">CPF Employer Contribution (Not Deducted)</div>
+                            <div class="salary-amount">$${cpfEmployerContribution.toFixed(2)}</div>
+                        </div>
+                        ` : ''}
 
                         ${deductions.filter(d => d.type && d.amount).map(deduction => `
                         <div class="salary-row">
@@ -2674,7 +3101,10 @@ export default function AdminDashboard() {
                                 Export Excel
                             </Button>
                             <Button
-                                onClick={() => setShowPrintDialog(true)}
+                                onClick={() => {
+                                    setPrintSelectedWorkerType('');
+                                    setPrintWorkerTypeDialog(true);
+                                }}
                                 className="bg-slate-600 hover:bg-slate-700"
                             >
                                 <Printer className="w-4 h-4 mr-2" />
@@ -3110,6 +3540,22 @@ export default function AdminDashboard() {
                                                 className="w-48"
                                             />
                                         </div>
+                                        <div className="space-y-2">
+                                            <label className="text-sm font-medium">Worker Type</label>
+                                            <Select
+                                                value={salaryReportWorkerType}
+                                                onValueChange={setSalaryReportWorkerType}
+                                            >
+                                                <SelectTrigger className="w-48">
+                                                    <SelectValue placeholder="Select worker type" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="all">All Workers</SelectItem>
+                                                    <SelectItem value="local">Local Workers</SelectItem>
+                                                    <SelectItem value="foreign">Foreign Workers</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
                                         <div className="flex items-end">
                                             <Button
                                                 onClick={() => generateSalaryReport.mutate()}
@@ -3241,8 +3687,60 @@ export default function AdminDashboard() {
                 </Tabs>
             </div>
 
-            {/* Print Timesheet Dialog */}
-            <Dialog open={showPrintDialog} onOpenChange={setShowPrintDialog}>
+    {/* Worker Type Selection Dialog for Printing */}
+    <Dialog open={printWorkerTypeDialog} onOpenChange={setPrintWorkerTypeDialog}>
+        <DialogContent>
+            <DialogHeader>
+                <DialogTitle>Select Worker Type</DialogTitle>
+                <DialogDescription>
+                    Choose whether to print timesheet and payslip for a Local Singaporean worker or a Foreign worker.
+                </DialogDescription>
+            </DialogHeader>
+            <div className="flex gap-4 justify-center py-6">
+                <Button
+                    onClick={() => {
+                        setPrintSelectedWorkerType('local');
+                        setPrintWorkerTypeDialog(false);
+                        setShowPrintDialog(true);
+                    }}
+                    className="flex flex-col items-center gap-3 p-6 h-auto bg-blue-600 hover:bg-blue-700"
+                >
+                    <User className="w-12 h-12" />
+                    <div className="text-center">
+                        <div className="font-semibold">Local Worker</div>
+                        <div className="text-sm opacity-90">Singapore Citizen/PR</div>
+                        <div className="text-xs opacity-75 mt-1">Includes CPF/SINDA calculations</div>
+                    </div>
+                </Button>
+                <Button
+                    onClick={() => {
+                        setPrintSelectedWorkerType('foreign');
+                        setPrintWorkerTypeDialog(false);
+                        setShowPrintDialog(true);
+                    }}
+                    className="flex flex-col items-center gap-3 p-6 h-auto bg-green-600 hover:bg-green-700"
+                >
+                    <User className="w-12 h-12" />
+                    <div className="text-center">
+                        <div className="font-semibold">Foreign Worker</div>
+                        <div className="text-xs opacity-90">Non-Singaporean</div>
+                        <div className="text-xs opacity-75 mt-1">Standard payroll</div>
+                    </div>
+                </Button>
+            </div>
+            <DialogFooter>
+                <Button
+                    variant="outline"
+                    onClick={() => setPrintWorkerTypeDialog(false)}
+                >
+                    Cancel
+                </Button>
+            </DialogFooter>
+        </DialogContent>
+    </Dialog>
+
+    {/* Print Timesheet Dialog */}
+    <Dialog open={showPrintDialog} onOpenChange={setShowPrintDialog}>
                 <DialogContent>
                     <DialogHeader>
                         <DialogTitle>Print Timesheet & Payslip</DialogTitle>
@@ -3273,6 +3771,16 @@ export default function AdminDashboard() {
                                 type="date"
                                 value={printSalaryPaidDate}
                                 onChange={(e) => setPrintSalaryPaidDate(e.target.value)}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Bonus (Optional)</label>
+                            <Input
+                                type="number"
+                                step="0.01"
+                                placeholder="0.00"
+                                value={printBonus}
+                                onChange={(e) => setPrintBonus(e.target.value)}
                             />
                         </div>
                         <div className="space-y-2">
@@ -3467,16 +3975,68 @@ export default function AdminDashboard() {
                 </DialogContent>
             </Dialog>
 
-            {/* Add Worker Dialog */}
-            <Dialog open={showAddWorkerDialog} onOpenChange={setShowAddWorkerDialog}>
-                <DialogContent className="max-w-2xl">
+    {/* Worker Type Selection Dialog */}
+    <Dialog open={showWorkerTypeDialog} onOpenChange={setShowWorkerTypeDialog}>
+        <DialogContent>
+            <DialogHeader>
+                <DialogTitle>Select Worker Type</DialogTitle>
+                <DialogDescription>
+                    Choose whether to add a Local Singaporean worker or a Foreign worker.
+                </DialogDescription>
+            </DialogHeader>
+            <div className="flex gap-4 justify-center py-6">
+                <Button
+                    onClick={() => {
+                        setSelectedWorkerType('local');
+                        setShowWorkerTypeDialog(false);
+                        setShowAddWorkerDialog(true);
+                    }}
+                    className="flex flex-col items-center gap-3 p-6 h-auto bg-blue-600 hover:bg-blue-700"
+                >
+                    <User className="w-12 h-12" />
+                    <div className="text-center">
+                        <div className="font-semibold">Local Worker</div>
+                        <div className="text-sm opacity-90">Singapore Citizen/PR</div>
+                        <div className="text-xs opacity-75 mt-1">CPF & SINDA calculations</div>
+                    </div>
+                </Button>
+                <Button
+                    onClick={() => {
+                        setSelectedWorkerType('foreign');
+                        setShowWorkerTypeDialog(false);
+                        setShowAddWorkerDialog(true);
+                    }}
+                    className="flex flex-col items-center gap-3 p-6 h-auto bg-green-600 hover:bg-green-700"
+                >
+                    <User className="w-12 h-12" />
+                    <div className="text-center">
+                        <div className="font-semibold">Foreign Worker</div>
+                        <div className="text-xs opacity-90">Non-Singaporean</div>
+                        <div className="text-xs opacity-75 mt-1">Standard payroll</div>
+                    </div>
+                </Button>
+            </div>
+            <DialogFooter>
+                <Button
+                    variant="outline"
+                    onClick={() => setShowWorkerTypeDialog(false)}
+                >
+                    Cancel
+                </Button>
+            </DialogFooter>
+        </DialogContent>
+    </Dialog>
+
+    {/* Add Worker Dialog */}
+    <Dialog open={showAddWorkerDialog} onOpenChange={setShowAddWorkerDialog}>
+                <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
                         <DialogTitle>Add New Worker</DialogTitle>
                         <DialogDescription>
                             Enter the worker's details to create a new profile.
                         </DialogDescription>
                     </DialogHeader>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pr-2">
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Employee ID</label>
                             <Input
@@ -3546,7 +4106,7 @@ export default function AdminDashboard() {
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Basic Salary per Day ($)</label>
+                            <label className="text-sm font-medium">Basic Salary per Month ($)</label>
                             <Input
                                 type="number"
                                 step="0.01"
@@ -3610,6 +4170,86 @@ export default function AdminDashboard() {
                                 onChange={(e) => setWorkerFormData({ ...workerFormData, password: e.target.value })}
                             />
                         </div>
+
+                        {/* Local Worker Specific Fields */}
+                        {selectedWorkerType === 'local' && (
+                            <>
+                                <div className="col-span-full border-t pt-4 mt-4">
+                                    <h3 className="text-lg font-semibold text-slate-700 mb-4">Local Worker Details (CPF & SINDA)</h3>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Date of Birth *</label>
+                                    <Input
+                                        type="date"
+                                        value={workerFormData.birthday}
+                                        onChange={(e) => {
+                                            const newBirthday = e.target.value;
+                                            setWorkerFormData({ ...workerFormData, birthday: newBirthday });
+
+                                            // Auto-calculate CPF and SINDA when birthday changes
+                                            if (newBirthday && workerFormData.employer_salary) {
+                                                const age = calculateAge(newBirthday);
+                                                const cpfEmployee = getCPFEmployeeRate(age);
+                                                const cpfEmployer = getCPFEmployerRate(age);
+                                                const sinda = calculateSINDA(parseFloat(workerFormData.employer_salary));
+
+                                                setCalculatedCPFEmployee(cpfEmployee);
+                                                setCalculatedCPFEmployer(cpfEmployer);
+                                                setCalculatedSINDA(sinda);
+                                            }
+                                        }}
+                                    />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Employer Salary (Monthly) *</label>
+                                    <Input
+                                        type="number"
+                                        step="0.01"
+                                        placeholder="0.00"
+                                        value={workerFormData.employer_salary}
+                                        onChange={(e) => {
+                                            const newSalary = e.target.value;
+                                            setWorkerFormData({ ...workerFormData, employer_salary: newSalary });
+
+                                            // Auto-calculate CPF and SINDA when salary changes
+                                            if (workerFormData.birthday && newSalary) {
+                                                const age = calculateAge(workerFormData.birthday);
+                                                const cpfEmployee = getCPFEmployeeRate(age);
+                                                const cpfEmployer = getCPFEmployerRate(age);
+                                                const sinda = calculateSINDA(parseFloat(newSalary));
+
+                                                setCalculatedCPFEmployee(cpfEmployee);
+                                                setCalculatedCPFEmployer(cpfEmployer);
+                                                setCalculatedSINDA(sinda);
+                                            }
+                                        }}
+                                    />
+                                </div>
+
+                                {/* Auto-calculation Preview Boxes */}
+                                <div className="col-span-full space-y-3 mt-4">
+                                    <h4 className="text-sm font-medium text-slate-600">Contribution Calculations</h4>
+
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                                            <div className="text-xs text-blue-600 font-medium">CPF Employee (%)</div>
+                                            <div className="text-lg font-bold text-blue-800">{calculatedCPFEmployee.toFixed(2)}%</div>
+                                        </div>
+
+                                        <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                                            <div className="text-xs text-green-600 font-medium">CPF Employer (%)</div>
+                                            <div className="text-lg font-bold text-green-800">{calculatedCPFEmployer.toFixed(2)}%</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="text-xs text-slate-500 mt-2">
+                                        Note: SINDA contribution will be calculated from employee's total monthly salary and deducted from their pay.
+                                    </div>
+                                </div>
+                            </>
+                        )}
                     </div>
                     <DialogFooter>
                         <Button
