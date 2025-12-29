@@ -91,6 +91,9 @@ CREATE POLICY "sites_insert_policy" ON public.sites FOR INSERT WITH CHECK (true)
 CREATE POLICY "sites_update_policy" ON public.sites FOR UPDATE USING (true) WITH CHECK (true);
 CREATE POLICY "sites_delete_policy" ON public.sites FOR DELETE USING (true);
 
+-- Remove employer salary column from local workers (CPF employer is based on employee wages)
+ALTER TABLE public.local_worker_details DROP COLUMN IF EXISTS employer_salary;
+
 -- Enable RLS on breaks table if not already enabled
 ALTER TABLE breaks ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "breaks_select_policy" ON breaks;

@@ -184,7 +184,6 @@ export default function AdminDashboard() {
         medical_leave_balance: '14',
         // Local worker specific fields
         birthday: '',
-        employer_salary: '',
         // Additional fields that might be in either table
         name: '',
         password_hash: ''
@@ -1503,8 +1502,8 @@ export default function AdminDashboard() {
 
             if (selectedWorkerType === 'local') {
                 // Validate local worker fields
-                if (!workerData.birthday || !workerData.employer_salary) {
-                    throw new Error('Birthday and Employer Salary are required for Local workers');
+                if (!workerData.birthday) {
+                    throw new Error('Birthday is required for Local workers');
                 }
 
                 const birthdayValidation = validateBirthday(workerData.birthday);
@@ -1516,13 +1515,16 @@ export default function AdminDashboard() {
                 const age = calculateAge(workerData.birthday);
                 const cpfEmployeeRate = getCPFEmployeeRate(age);
                 const cpfEmployerRate = getCPFEmployerRate(age);
-                const sindaAmount = calculateSINDA(parseFloat(workerData.employer_salary));
+                const estimatedMonthlyWages =
+                    (parseFloat(workerData.basic_salary_per_day) || 0) +
+                    (parseFloat(workerData.basic_allowance_1) || 0) +
+                    (parseFloat(workerData.incentive_allowance) || 0);
+                const sindaAmount = calculateSINDA(estimatedMonthlyWages);
 
                 // Insert into local_worker_details table
                 const localWorkerData = {
                     ...baseWorkerData,
                     birthday: workerData.birthday,
-                    employer_salary: parseFloat(workerData.employer_salary),
                     cpf_employee_contribution: cpfEmployeeRate,
                     cpf_employer_contribution: cpfEmployerRate,
                     sinda_contribution: sindaAmount
@@ -1600,12 +1602,15 @@ export default function AdminDashboard() {
                 const age = calculateAge(workerData.birthday);
                 const cpfEmployeeRate = getCPFEmployeeRate(age);
                 const cpfEmployerRate = getCPFEmployerRate(age);
-                const sindaAmount = calculateSINDA(parseFloat(workerData.employer_salary));
+                const estimatedMonthlyWages =
+                    (parseFloat(workerData.basic_salary_per_day) || 0) +
+                    (parseFloat(workerData.basic_allowance_1) || 0) +
+                    (parseFloat(workerData.incentive_allowance) || 0);
+                const sindaAmount = calculateSINDA(estimatedMonthlyWages);
 
                 const localUpdateData = {
                     ...baseUpdateData,
                     birthday: workerData.birthday,
-                    employer_salary: parseFloat(workerData.employer_salary),
                     cpf_employee_contribution: cpfEmployeeRate,
                     cpf_employer_contribution: cpfEmployerRate,
                     sinda_contribution: sindaAmount
@@ -1712,7 +1717,16 @@ export default function AdminDashboard() {
             bank_account_number: '',
             ot_rate_per_hour: '',
             sun_ph_rate_per_day: '',
-            basic_salary_per_day: ''
+            basic_salary_per_day: '',
+            basic_allowance_1: '150',
+            password: '',
+            annual_leave_limit: '10',
+            medical_leave_limit: '14',
+            annual_leave_balance: '10',
+            medical_leave_balance: '14',
+            birthday: '',
+            name: '',
+            password_hash: ''
         });
     };
 
@@ -1722,15 +1736,9 @@ export default function AdminDashboard() {
     };
 
     // New state for edit worker flow
-    const [pendingEditWorkerId, setPendingEditWorkerId] = useState('');
     const [showEditWorkerTypeDialog, setShowEditWorkerTypeDialog] = useState(false);
 
-    const handleEditWorkerClick = async () => {
-        const employeeId = prompt('Enter Employee ID to edit:');
-        if (!employeeId) return;
-        
-        // Store the employee ID and show the worker type selection dialog
-        setPendingEditWorkerId(employeeId.trim());
+    const handleEditWorkerClick = () => {
         setShowEditWorkerTypeDialog(true);
     };
 
@@ -1738,7 +1746,9 @@ export default function AdminDashboard() {
     const handleEditWorkerTypeSelect = (workerType) => {
         setSelectedWorkerType(workerType);
         setShowEditWorkerTypeDialog(false);
-        loadWorkerForEdit(pendingEditWorkerId, workerType);
+        const employeeId = prompt(`Enter ${workerType === 'local' ? 'Local' : 'Foreign'} Worker Employee ID to edit:`);
+        if (!employeeId) return;
+        loadWorkerForEdit(employeeId.trim(), workerType);
     };
 
     // Function to load worker data after type is selected
@@ -1775,7 +1785,6 @@ export default function AdminDashboard() {
                 medical_leave_balance: workerData.medical_leave_balance || '14',
                 // Local worker specific fields
                 birthday: workerData.birthday || '',
-                employer_salary: workerData.employer_salary || '',
                 // Additional fields that might be in either table
                 name: workerData.name || workerData.employee_name || '',
                 password_hash: workerData.password_hash || workerData.password || ''
@@ -1786,11 +1795,10 @@ export default function AdminDashboard() {
                 const age = calculateAge(workerData.birthday);
                 const cpfEmployeeRate = getCPFEmployeeRate(age);
                 const cpfEmployerRate = getCPFEmployerRate(age);
-                const sindaAmount = calculateSINDA(parseFloat(workerData.employer_salary) || 0);
 
                 setCalculatedCPFEmployee(cpfEmployeeRate);
                 setCalculatedCPFEmployer(cpfEmployerRate);
-                setCalculatedSINDA(sindaAmount);
+                setCalculatedSINDA(0);
             } else {
                 // Reset CPF and SINDA for foreign workers
                 setCalculatedCPFEmployee(0);
@@ -1888,7 +1896,7 @@ export default function AdminDashboard() {
 
         // Additional required fields for local workers
         if (selectedWorkerType === 'local') {
-            requiredFields.push('birthday', 'employer_salary');
+            requiredFields.push('birthday');
         }
 
         // Check all required fields
@@ -1906,7 +1914,7 @@ export default function AdminDashboard() {
         const numericFields = [
             'ot_rate_per_hour', 'sun_ph_rate_per_day', 'basic_salary_per_day',
             'basic_allowance_1', 'annual_leave_limit', 'medical_leave_limit',
-            'annual_leave_balance', 'medical_leave_balance', 'employer_salary'
+            'annual_leave_balance', 'medical_leave_balance'
         ];
         
         numericFields.forEach(field => {
@@ -2250,26 +2258,27 @@ export default function AdminDashboard() {
         let sdlContribution = 0;
 
         if (workerType === 'local') {
+            const cpfWageBase = basicPay + monthlyAllowance + incentiveAllowance + sunPhPay + bonusAmount;
             // Calculate CPF Employee deduction (from employee's salary)
             cpfEmployeeDeduction = calculateCPFDeductions(
-                basicPay + monthlyAllowance + incentiveAllowance + sunPhPay + bonusAmount, 
+                cpfWageBase,
                 workerDetails.cpf_employee_contribution, 
                 0
             ).employeeDeduction;
 
-            // Calculate CPF Employer contribution (from employer salary, not deducted)
+            // Calculate CPF Employer contribution (not deducted)
             cpfEmployerContribution = calculateCPFDeductions(
-                workerDetails.employer_salary, 
+                cpfWageBase,
                 0, 
                 workerDetails.cpf_employer_contribution
             ).employerContribution;
 
             // Calculate SINDA deduction from employee's total additions
-            sindaDeduction = calculateSINDA(basicPay + monthlyAllowance + incentiveAllowance + sunPhPay + bonusAmount);
+            sindaDeduction = calculateSINDA(cpfWageBase);
 
             // Calculate SDL contribution (0.25% of monthly wages, capped at $4,500)
             // Min $2, Max $11.25, added to employer cost
-            sdlContribution = calculateSDL(workerDetails.employer_salary);
+            sdlContribution = calculateSDL(cpfWageBase);
         }
 
         // Calculate total deductions (CPF Employee + SINDA + other deductions)
@@ -3092,10 +3101,10 @@ export default function AdminDashboard() {
                                 <div class="amount-large" style="font-size: 14px;">-$${Math.abs(sindaDeduction).toFixed(2)}</div>
                                 <div class="amount-label" style="font-size: 11px;">SINDA</div>
                             </div>
-                            <div class="salary-box employer-box" style="padding: 6px 8px;">
-                                <div class="amount-large" style="font-size: 14px;">$${cpfEmployerContribution.toFixed(2)}</div>
-                                <div class="amount-label" style="font-size: 11px;">CPF Employer</div>
-                            </div>
+                                <div class="salary-box employer-box" style="padding: 6px 8px;">
+                                    <div class="amount-large" style="font-size: 14px;">$${cpfEmployerContribution.toFixed(2)}</div>
+                                    <div class="amount-label" style="font-size: 11px;">CPF Employer (Not deducted, based on employee salary)</div>
+                                </div>
                         </div>
 
                         <!-- Totals Row -->
@@ -5058,41 +5067,14 @@ export default function AdminDashboard() {
                                             setWorkerFormData({ ...workerFormData, birthday: newBirthday });
 
                                             // Auto-calculate CPF and SINDA when birthday changes
-                                            if (newBirthday && workerFormData.employer_salary) {
+                                            if (newBirthday) {
                                                 const age = calculateAge(newBirthday);
                                                 const cpfEmployee = getCPFEmployeeRate(age);
                                                 const cpfEmployer = getCPFEmployerRate(age);
-                                                const sinda = calculateSINDA(parseFloat(workerFormData.employer_salary));
 
                                                 setCalculatedCPFEmployee(cpfEmployee);
                                                 setCalculatedCPFEmployer(cpfEmployer);
-                                                setCalculatedSINDA(sinda);
-                                            }
-                                        }}
-                                    />
-                                </div>
-
-                                <div className="space-y-2">
-                                    <label className="text-sm font-medium">Employer Salary (Monthly) *</label>
-                                    <Input
-                                        type="number"
-                                        step="0.01"
-                                        placeholder="0.00"
-                                        value={workerFormData.employer_salary}
-                                        onChange={(e) => {
-                                            const newSalary = e.target.value;
-                                            setWorkerFormData({ ...workerFormData, employer_salary: newSalary });
-
-                                            // Auto-calculate CPF and SINDA when salary changes
-                                            if (workerFormData.birthday && newSalary) {
-                                                const age = calculateAge(workerFormData.birthday);
-                                                const cpfEmployee = getCPFEmployeeRate(age);
-                                                const cpfEmployer = getCPFEmployerRate(age);
-                                                const sinda = calculateSINDA(parseFloat(newSalary));
-
-                                                setCalculatedCPFEmployee(cpfEmployee);
-                                                setCalculatedCPFEmployer(cpfEmployer);
-                                                setCalculatedSINDA(sinda);
+                                                setCalculatedSINDA(0);
                                             }
                                         }}
                                     />
@@ -5158,7 +5140,7 @@ export default function AdminDashboard() {
                     <div className="flex flex-col space-y-4 py-4">
                         <Button 
                             onClick={() => handleEditWorkerTypeSelect('foreign')}
-                            className="justify-start px-6 py-8 text-lg"
+                            className="justify-start px-6 py-8 text-lg border-2 border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-xl shadow-sm"
                             variant="outline"
                         >
                             <div className="text-left">
@@ -5168,7 +5150,7 @@ export default function AdminDashboard() {
                         </Button>
                         <Button 
                             onClick={() => handleEditWorkerTypeSelect('local')}
-                            className="justify-start px-6 py-8 text-lg"
+                            className="justify-start px-6 py-8 text-lg border-2 border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-xl shadow-sm"
                             variant="outline"
                         >
                             <div className="text-left">
@@ -5368,33 +5350,13 @@ export default function AdminDashboard() {
                                         onChange={(e) => {
                                             const newFormData = { ...workerFormData, birthday: e.target.value };
                                             // Recalculate CPF and SINDA when birthday changes
-                                            if (e.target.value && workerFormData.employer_salary) {
+                                            if (e.target.value) {
                                                 const age = calculateAge(e.target.value);
                                                 newFormData.cpf_employee_contribution = getCPFEmployeeRate(age);
                                                 newFormData.cpf_employer_contribution = getCPFEmployerRate(age);
-                                                newFormData.sinda_contribution = calculateSINDA(parseFloat(workerFormData.employer_salary) || 0);
                                                 setCalculatedCPFEmployee(newFormData.cpf_employee_contribution);
                                                 setCalculatedCPFEmployer(newFormData.cpf_employer_contribution);
-                                                setCalculatedSINDA(newFormData.sinda_contribution);
-                                            }
-                                            setWorkerFormData(newFormData);
-                                        }}
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <label className="text-sm font-medium">Employer's Salary ($)</label>
-                                    <Input
-                                        type="number"
-                                        step="0.01"
-                                        placeholder="0.00"
-                                        value={workerFormData.employer_salary || ''}
-                                        onChange={(e) => {
-                                            const salary = parseFloat(e.target.value) || 0;
-                                            const newFormData = { ...workerFormData, employer_salary: e.target.value };
-                                            // Recalculate SINDA when salary changes
-                                            if (workerFormData.birthday) {
-                                                newFormData.sinda_contribution = calculateSINDA(salary);
-                                                setCalculatedSINDA(newFormData.sinda_contribution);
+                                                setCalculatedSINDA(0);
                                             }
                                             setWorkerFormData(newFormData);
                                         }}
@@ -5417,16 +5379,6 @@ export default function AdminDashboard() {
                                         step="0.01"
                                         placeholder="0.00"
                                         value={calculatedCPFEmployer}
-                                        readOnly
-                                    />
-                                </div>
-                                <div className="space-y-2">
-                                    <label className="text-sm font-medium">SINDA Contribution ($)</label>
-                                    <Input
-                                        type="number"
-                                        step="0.01"
-                                        placeholder="0.00"
-                                        value={calculatedSINDA}
                                         readOnly
                                     />
                                 </div>
