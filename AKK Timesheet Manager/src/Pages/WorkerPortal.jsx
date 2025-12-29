@@ -61,22 +61,39 @@ export default function WorkerPortal() {
         enabled: !!workerId
     });
 
+    const workerType = sessionStorage.getItem('workerType') || 'foreign';
+    const workerTable = workerType === 'local' ? 'local_worker_details' : 'worker_details';
+    const idField = workerType === 'local' ? 'employee_id' : 'employee_id';
+    const queryClient = useQueryClient();
+
     // Fetch worker's leave balances
     const { data: workerBalance, isLoading: isLoadingBalance } = useQuery({
-        queryKey: ['workerBalance', workerId],
+        queryKey: ['workerBalance', workerId, workerType],
         queryFn: async () => {
             if (!workerId) return null;
 
             const { data, error } = await supabase
-                .from('worker_details')
+                .from(workerTable)
                 .select('annual_leave_balance, medical_leave_balance')
-                .eq('employee_id', workerId)
+                .eq(idField, workerId)
                 .single();
 
-            if (error) throw error;
+            if (error) {
+                console.error('Error fetching worker balance:', error);
+                // Return default values if there's an error
+                return { annual_leave_balance: 0, medical_leave_balance: 0 };
+            }
+            
+            // Handle case where data might be null
+            if (!data) {
+                return { annual_leave_balance: 0, medical_leave_balance: 0 };
+            }
+            
             return data;
         },
-        enabled: !!workerId
+        enabled: !!workerId,
+        // Provide default values while loading
+        placeholderData: { annual_leave_balance: 0, medical_leave_balance: 0 }
     });
 
     // Check authentication on component mount
@@ -140,38 +157,98 @@ export default function WorkerPortal() {
     }, [todaysShifts]);
 
     const handleScanSuccess = async (site, qrToken) => {
-        console.log('Scan success - site:', site, 'qrToken:', qrToken, 'action:', activeScan);
-        if (!workerId || !site) return;
+        console.log('Scan success - site:', site, 'qrToken:', qrToken, 'action:', activeScan, 'workerType:', workerType);
+        if (!workerId || !site) {
+            toast.error("Invalid site or missing worker information");
+            return;
+        }
 
         setIsProcessing(true);
 
         try {
             const now = new Date().toISOString();
             const today = new Date().toISOString().split('T')[0];
+            
+            // Handle both string and numeric IDs
+            const workerIdValue = workerType === 'local' ? workerId : parseInt(workerId, 10);
+            // Use 'worker_id' as the column name in the shifts table
+            const workerIdField = 'worker_id';
 
             if (activeScan === 'entry') {
-                // Allow multiple shifts per day - always create new shift record
+                // First, check if there's an existing active shift
+                console.log('Checking for existing shifts with:', { workerIdField, workerIdValue, today });
+                const { data: existingShift, error: shiftError } = await supabase
+                    .from('shifts')
+                    .select('*')
+                    .eq(workerIdField, workerIdValue)
+                    .eq('has_left', false)
+                    .eq('work_date', today)
+                    .maybeSingle();
+
+                if (shiftError) {
+                    console.error('Error checking for existing shifts:', shiftError);
+                    throw shiftError;
+                }
+                console.log('Existing shift check result:', existingShift);
+
+                if (existingShift) {
+                    toast.error("You already have an active shift");
+                    setIsProcessing(false);
+                    setActiveScan(null);
+                    return;
+                }
+
+                // Create new shift record
+                const shiftData = {
+                    [workerIdField]: workerIdValue,
+                    site_id: site.id,
+                    work_date: today,
+                    entry_time: now,
+                    has_left: false,
+                    // Removed worker_type as it's not in the schema
+                    created_at: now
+                };
+                
+                console.log('Creating shift with data:', shiftData);
+                
                 const { data, error } = await supabase
                     .from('shifts')
-                    .insert([{
-                        worker_id: workerId,
-                        site_id: site.id,
-                        work_date: today,
-                        entry_time: now,
-                        has_left: false
-                    }])
+                    .insert([shiftData])
                     .select()
                     .single();
 
-                if (error) throw error;
+                if (error) {
+                    console.error('Error creating shift:', error);
+                    if (error.code === '23505') { // Unique violation
+                        throw new Error('You already have an active shift');
+                    } else if (error.code === '23503') { // Foreign key violation
+                        throw new Error('Invalid site or worker information');
+                    } else {
+                        throw new Error(error.message || 'Failed to record shift');
+                    }
+                }
+
+                // Fetch the created shift with site details
+                const { data: shiftWithSite } = await supabase
+                    .from('shifts')
+                    .select('*, sites(*)')
+                    .eq('id', data.id)
+                    .single();
 
                 toast.success("Clocked in successfully!");
-                setCurrentShift(data);
+                setCurrentShift(shiftWithSite);
                 refetchShift();
 
             } else if (activeScan === 'breaks') {
                 if (!currentShift || !currentShift.entry_time) {
                     toast.error("Must clock in first");
+                    setIsProcessing(false);
+                    return;
+                }
+                
+                // Verify the worker is at the same site as their current shift
+                if (currentShift.site_id !== site.id) {
+                    toast.error("Must be at the same site as your current shift");
                     setIsProcessing(false);
                     return;
                 }
@@ -218,6 +295,13 @@ export default function WorkerPortal() {
                 console.log('Leave scan - currentShift:', currentShift, 'site:', site);
                 if (!currentShift || !currentShift.entry_time) {
                     toast.error("Must clock in first");
+                    setIsProcessing(false);
+                    return;
+                }
+                
+                // Verify the worker is at the same site as their current shift
+                if (currentShift.site_id !== site.id) {
+                    toast.error("Must be at the same site as your current shift");
                     setIsProcessing(false);
                     return;
                 }
@@ -309,62 +393,118 @@ export default function WorkerPortal() {
         if (!currentShift) return { status: 'not_started', text: 'Not clocked in' };
 
         if (!currentShift.has_left) {
-            if (currentShift.lunch_start && !currentShift.lunch_end) {
-                return { status: 'on_lunch', text: 'On lunch break' };
-            }
+            const hasOngoingBreak = (shiftBreaks || []).some(b => b.break_start && !b.break_end);
+            if (hasOngoingBreak) return { status: 'on_lunch', text: 'On break' };
             return { status: 'working', text: 'Working' };
         }
 
         return { status: 'completed', text: 'Shift completed' };
     };
 
-    const shiftStatus = getShiftStatus();
+    const [shiftBreaks, setShiftBreaks] = useState([]);
+    const [totalBreakTime, setTotalBreakTime] = useState(0);
 
-    const canStartLunch = currentShift && currentShift.entry_time && !currentShift.lunch_start;
-    const canEndLunch = currentShift && currentShift.lunch_start && !currentShift.lunch_end;
+    // Fetch breaks for the current shift
+    useEffect(() => {
+        const fetchBreaks = async () => {
+            if (currentShift?.id) {
+                const { data: breaks, error } = await supabase
+                    .from('breaks')
+                    .select('*')
+                    .eq('shift_id', currentShift.id)
+                    .order('break_start', { ascending: true });
+
+                if (!error && breaks) {
+                    setShiftBreaks(breaks);
+                    // Calculate total break time in minutes
+                    const totalMinutes = breaks.reduce((total, breakItem) => {
+                        if (breakItem.break_start && breakItem.break_end) {
+                            const start = new Date(breakItem.break_start);
+                            const end = new Date(breakItem.break_end);
+                            return total + (end - start) / (1000 * 60); // Convert to minutes
+                        }
+                        return total;
+                    }, 0);
+                    setTotalBreakTime(totalMinutes);
+                }
+            }
+        };
+
+        fetchBreaks();
+    }, [currentShift?.id]);
+
+    const shiftStatus = getShiftStatus();
     const canClockOut = currentShift && currentShift.entry_time && !currentShift.has_left;
 
-    const queryClient = useQueryClient();
+    // Handle leave request submission
+    const handleLeaveRequest = async () => {
+        if (!leaveRequestData.leave_type || !leaveRequestData.from_date) {
+            toast.error("Please fill in all required fields");
+            return;
+        }
 
-    // Leave request mutation
-    const submitLeaveRequestMutation = useMutation({
-        mutationFn: async (leaveData) => {
-            console.log('Submitting leave request:', leaveData);
+        // Check if the worker has enough leave balance
+        const leaveType = leaveRequestData.leave_type.toLowerCase();
+        const balanceField = `${leaveType}_leave_balance`;
+        const currentBalance = workerBalance?.[balanceField] || 0;
+        
+        // Calculate number of days requested
+        const fromDate = new Date(leaveRequestData.from_date);
+        const toDate = leaveRequestData.leave_duration === 'full_day' ? 
+            new Date(leaveRequestData.from_date) : 
+            new Date(leaveRequestData.to_date);
+            
+        // Calculate days difference
+        const timeDiff = toDate - fromDate;
+        const daysDiff = Math.ceil(timeDiff / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end dates
+
+        if (currentBalance < daysDiff) {
+            toast.error(`Insufficient ${leaveType} leave balance. You have ${currentBalance} day(s) left.`);
+            return;
+        }
+
+        setIsProcessing(true);
+
+        try {
             const { error } = await supabase
                 .from('leave_requests')
-                .insert([{
-                    employee_id: workerId,
-                    leave_type: leaveData.leave_type,
-                    leave_duration: leaveData.leave_duration,
-                    from_date: leaveData.from_date,
-                    to_date: leaveData.to_date,
-                    reason: leaveData.reason,
-                    status: 'pending'
-                }]);
-            if (error) {
-                console.error('Leave request error:', error);
-                throw error;
-            }
-        },
-        onSuccess: () => {
-            console.log('Leave request submitted successfully');
-            toast.success('Leave request submitted successfully');
+                .insert([
+                    {
+                        employee_id: workerId,
+                        employee_name: workerName,
+                        leave_type: leaveRequestData.leave_type,
+                        leave_duration: leaveRequestData.leave_duration,
+                        from_date: leaveRequestData.from_date,
+                        to_date: leaveRequestData.leave_duration === 'full_day' ? 
+                            leaveRequestData.from_date : 
+                            leaveRequestData.to_date,
+                        reason: leaveRequestData.reason || '',
+                        status: 'pending',
+                        created_at: new Date().toISOString(),
+                        worker_type: workerType
+                    }
+                ]);
+
+            if (error) throw error;
+
+            // Update the worker's leave balance if the leave is approved (handled by admin)
+            // The actual deduction will happen when the admin approves the leave
+            toast.success("Leave request submitted successfully!");
             setShowLeaveRequestDialog(false);
             setLeaveRequestData({
                 leave_type: '',
+                leave_duration: 'full_day',
                 from_date: '',
                 to_date: '',
                 reason: ''
             });
-            // Invalidate admin queries and worker's leave history to refresh immediately
-            queryClient.invalidateQueries({ queryKey: ['leaveRequests'] });
-            queryClient.invalidateQueries({ queryKey: ['workerLeaveHistory', workerId] });
-        },
-        onError: (error) => {
-            console.error('Leave submission failed:', error);
-            toast.error(`Failed to submit leave request: ${error.message}`);
-        },
-    });
+        } catch (error) {
+            console.error('Error submitting leave request:', error);
+            toast.error(error.message || 'Failed to submit leave request');
+        } finally {
+            setIsProcessing(false);
+        }
+    };
 
     const handleSubmitLeaveRequest = () => {
         if (!leaveRequestData.leave_type || !leaveRequestData.from_date || !leaveRequestData.to_date) {
@@ -549,10 +689,29 @@ export default function WorkerPortal() {
                                             </Badge>
 
                                             {currentShift && (
-                                                <div className="text-sm text-slate-600">
-                                                    <p>Site: {currentShift.sites?.site_name}</p>
+                                                <div className="text-sm text-slate-600 space-y-1">
+                                                    <p className="font-medium">Site: {currentShift.sites?.site_name}</p>
                                                     {currentShift.entry_time && (
                                                         <p>Started: {formatTime(currentShift.entry_time)}</p>
+                                                    )}
+                                                    {shiftBreaks.length > 0 && (
+                                                        <div className="mt-2 pt-2 border-t border-slate-100">
+                                                            <p className="font-medium">Breaks:</p>
+                                                            <ul className="space-y-1 mt-1">
+                                                                {shiftBreaks.map((breakItem, index) => (
+                                                                    <li key={breakItem.id} className="flex justify-between">
+                                                                        <span>Break {index + 1}:</span>
+                                                                        <span>
+                                                                            {formatTime(breakItem.break_start)}
+                                                                            {breakItem.break_end ? ` - ${formatTime(breakItem.break_end)}` : ' (Ongoing)'}
+                                                                        </span>
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                            <p className="mt-1 text-right text-slate-700 font-medium">
+                                                                Total Break: {Math.floor(totalBreakTime / 60)}h {totalBreakTime % 60}m
+                                                            </p>
+                                                        </div>
                                                     )}
                                                 </div>
                                             )}
@@ -939,21 +1098,16 @@ export default function WorkerPortal() {
                             Cancel
                         </Button>
                         <Button
-                            onClick={handleSubmitLeaveRequest}
-                            disabled={submitLeaveRequestMutation.isPending}
+                            onClick={handleLeaveRequest}
+                            disabled={isProcessing}
                             className="bg-blue-600 hover:bg-blue-700"
                         >
-                            {submitLeaveRequestMutation.isPending ? (
+                            {isProcessing ? (
                                 <>
-                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                     Submitting...
                                 </>
-                            ) : (
-                                <>
-                                    <FileText className="w-4 h-4 mr-2" />
-                                    Submit Request
-                                </>
-                            )}
+                            ) : 'Submit Request'}
                         </Button>
                     </DialogFooter>
                 </DialogContent>

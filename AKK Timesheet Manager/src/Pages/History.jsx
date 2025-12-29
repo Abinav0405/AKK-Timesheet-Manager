@@ -55,22 +55,43 @@ export default function History() {
                 throw error;
             }
 
-            // If we have shifts, fetch related site data separately
+            // If we have shifts, fetch related site data and breaks separately
             if (data && data.length > 0) {
                 const siteIds = [...new Set(data.map(shift => shift.site_id))];
+                const shiftIds = data.map(shift => shift.id);
 
+                // Fetch sites
                 const { data: sites } = await supabase
                     .from('sites')
                     .select('id, site_name, latitude, longitude')
                     .in('id', siteIds);
 
-                // Merge site data into shifts
-                const shiftsWithSites = data.map(shift => ({
+                // Fetch breaks for all shifts
+                const { data: allBreaks } = await supabase
+                    .from('breaks')
+                    .select('*')
+                    .in('shift_id', shiftIds)
+                    .order('break_start', { ascending: true });
+
+                // Group breaks by shift_id
+                const breaksByShift = {};
+                if (allBreaks) {
+                    allBreaks.forEach(breakItem => {
+                        if (!breaksByShift[breakItem.shift_id]) {
+                            breaksByShift[breakItem.shift_id] = [];
+                        }
+                        breaksByShift[breakItem.shift_id].push(breakItem);
+                    });
+                }
+
+                // Merge site data and breaks into shifts
+                const shiftsWithData = data.map(shift => ({
                     ...shift,
-                    sites: sites?.find(s => s.id === shift.site_id) || null
+                    sites: sites?.find(s => s.id === shift.site_id) || null,
+                    breaks: breaksByShift[shift.id] || []
                 }));
 
-                return shiftsWithSites;
+                return shiftsWithData;
             }
 
             return data || [];
@@ -293,7 +314,7 @@ export default function History() {
                                                             )}
                                                             {shift.leave_time && (
                                                                 <span className="text-slate-600">
-                                                                    Leave: {formatTime(shift.leave_time)}
+                                                                    Exit: {formatTime(shift.leave_time)}
                                                                 </span>
                                                             )}
                                                         </div>
@@ -301,6 +322,9 @@ export default function History() {
                                                             <div className="flex items-center gap-4 text-sm">
                                                                 <span className="text-green-600 font-medium">
                                                                     Worked: {shift.worked_hours?.toFixed(2)}h
+                                                                </span>
+                                                                <span className="text-slate-600 font-medium">
+                                                                    Break: {calculateShiftHours(shift.entry_time, shift.leave_time, shift.breaks || [], shift.work_date).breakHours.toFixed(2)}h
                                                                 </span>
                                                                 {shift.sunday_hours > 0 && (
                                                                     <span className="text-orange-600 font-medium">
@@ -326,28 +350,37 @@ export default function History() {
                                                             <h4 className="font-medium text-slate-700 mb-2">Time Details</h4>
                                                             <div className="space-y-1">
                                                                 <p>Entry: {shift.entry_time ? formatTime(shift.entry_time) : 'Not recorded'}</p>
-                                                                {shift.lunch_start && (
-                                                                    <p className="flex items-center gap-1">
+                                                                {shift.breaks && shift.breaks.length > 0 && shift.breaks.map((breakItem, index) => (
+                                                                    <p key={breakItem.id} className="flex items-center gap-1">
                                                                         <Coffee className="w-3 h-3" />
-                                                                        Lunch Start: {formatTime(shift.lunch_start)}
+                                                                        Break {index + 1}: {formatTime(breakItem.break_start)}
+                                                                        {breakItem.break_end ? ` - ${formatTime(breakItem.break_end)}` : ' (Ongoing)'}
+                                                                    </p>
+                                                                ))}
+                                                                {shift.has_left && (
+                                                                    <p className="text-slate-600">
+                                                                        Total Break: {calculateShiftHours(shift.entry_time, shift.leave_time, shift.breaks || [], shift.work_date).breakHours.toFixed(2)}h
                                                                     </p>
                                                                 )}
-                                                                {shift.lunch_end && (
-                                                                    <p className="flex items-center gap-1">
-                                                                        <Coffee className="w-3 h-3" />
-                                                                        Lunch End: {formatTime(shift.lunch_end)}
-                                                                    </p>
-                                                                )}
-                                                                <p>Leave: {shift.leave_time ? formatTime(shift.leave_time) : 'Not recorded'}</p>
+                                                                <p>Exit: {shift.leave_time ? formatTime(shift.leave_time) : 'Not recorded'}</p>
                                                             </div>
                                                         </div>
                                                         {shift.has_left && (
                                                             <div>
                                                                 <h4 className="font-medium text-slate-700 mb-2">Hours Breakdown</h4>
                                                                 <div className="space-y-1">
-                                                                    <p>Regular Hours: {shift.worked_hours?.toFixed(2) || 0}</p>
-                                                                    <p>Sunday Hours: {shift.sunday_hours?.toFixed(2) || 0}</p>
-                                                                    <p>OT Hours: {shift.ot_hours?.toFixed(2) || 0}</p>
+                                                                    {(() => {
+                                                                        const recalc = calculateShiftHours(shift.entry_time, shift.leave_time, shift.breaks || [], shift.work_date);
+                                                                        return (
+                                                                            <>
+                                                                                <p>Regular Hours: {shift.worked_hours?.toFixed(2) || 0}</p>
+                                                                                <p>Sunday Hours: {shift.sunday_hours?.toFixed(2) || 0}</p>
+                                                                                <p>OT Hours: {shift.ot_hours?.toFixed(2) || 0}</p>
+                                                                                <p>Break Hours: {recalc.breakHours.toFixed(2)}</p>
+                                                                                <p>Total Hours: {(recalc.basicHours + recalc.sundayHours + recalc.otHours).toFixed(2)}</p>
+                                                                            </>
+                                                                        );
+                                                                    })()}
                                                                 </div>
                                                             </div>
                                                         )}

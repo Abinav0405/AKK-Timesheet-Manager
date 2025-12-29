@@ -19,7 +19,7 @@ import {
     ArrowLeft, Download, Search, Clock, RotateCcw,
     Calendar, User, FileSpreadsheet, Loader2, Trash2, Printer,
     CheckCircle, XCircle, AlertCircle, LogOut, Edit2, ChevronDown, ChevronUp,
-    MapPin, Coffee, DollarSign, Users
+    MapPin, Coffee, DollarSign, Users, Eye, EyeOff
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { createPageUrl } from "@/lib/utils";
@@ -81,10 +81,22 @@ export default function AdminDashboard() {
     const [shiftEditData, setShiftEditData] = useState({
         entry_time: '',
         leave_time: '',
-        lunch_start: '',
-        lunch_end: '',
-        leave_type: ''
+        breaks: [{ break_start: '', break_end: '' }],
+        leave_type: '__none__'
     });
+
+    const pad2 = (value) => String(value).padStart(2, '0');
+    const toDateTimeLocalUtc = (isoValue) => {
+        if (!isoValue) return '';
+        const d = new Date(isoValue);
+        return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    };
+    const fromDateTimeLocalUtc = (localValue) => {
+        if (!localValue) return null;
+        const d = new Date(localValue);
+        if (Number.isNaN(d.getTime())) return null;
+        return d.toISOString();
+    };
 
     // Leave editing states
     const [showEditLeaveDialog, setShowEditLeaveDialog] = useState(false);
@@ -106,6 +118,7 @@ export default function AdminDashboard() {
     const [deleteWorkerId, setDeleteWorkerId] = useState('');
     const [deletePassword, setDeletePassword] = useState('');
     const [deletePasswordError, setDeletePasswordError] = useState('');
+    const [showPassword, setShowPassword] = useState(false);
     const [workerFormData, setWorkerFormData] = useState({
         employee_id: '',
         nric_fin: '',
@@ -124,13 +137,131 @@ export default function AdminDashboard() {
         medical_leave_balance: '14',
         // Local worker specific fields
         birthday: '',
-        employer_salary: ''
+        employer_salary: '',
+        // Additional fields that might be in either table
+        name: '',
+        password_hash: ''
     });
 
     // Calculated values for Local workers
     const [calculatedCPFEmployee, setCalculatedCPFEmployee] = useState(0);
     const [calculatedCPFEmployer, setCalculatedCPFEmployer] = useState(0);
     const [calculatedSINDA, setCalculatedSINDA] = useState(0);
+
+    const [accumulatedCPFEmployee, setAccumulatedCPFEmployee] = useState(0);
+    const [accumulatedEmployerCPF, setAccumulatedEmployerCPF] = useState(0);
+    const [totalAccumulatedSalary, setTotalAccumulatedSalary] = useState(0);
+
+    // Helper function to fetch worker details from either local_worker_details or worker_details
+    const fetchWorkerDetails = async (workerId) => {
+        try {
+            // Try local_worker_details first
+            const { data: localWorker, error: localError } = await supabase
+                .from('local_worker_details')
+                .select('*')
+                .eq('employee_id', workerId)
+                .single();
+
+            if (!localError && localWorker) {
+                return { ...localWorker, type: 'local' };
+            }
+
+            // If not found in local_worker_details, try worker_details
+            const { data: foreignWorker, error: foreignError } = await supabase
+                .from('worker_details')
+                .select('*')
+                .eq('employee_id', workerId)
+                .single();
+
+            if (!foreignError && foreignWorker) {
+                return { ...foreignWorker, type: 'foreign' };
+            }
+
+            // If we get here, worker wasn't found in either table
+            console.warn('Worker not found in any table:', workerId);
+            return null;
+
+        } catch (error) {
+            console.error('Error fetching worker details:', error);
+            return null;
+        }
+    };
+
+    // Function to calculate accumulated values
+    const calculateAccumulatedValues = async (workerId, currentMonth, currentYear) => {
+        try {
+            // First get the worker type
+            const workerDetails = await fetchWorkerDetails(workerId);
+            if (!workerDetails) {
+                console.warn('Worker details not found, using 0 for accumulated values');
+                setTotalAccumulatedSalary(0);
+                setAccumulatedCPFEmployee(0);
+                setAccumulatedEmployerCPF(0);
+                return;
+            }
+
+            // Get all payslips for this worker from January to current month
+            const { data: payslips, error } = await supabase
+                .from('payslips')
+                .select('*')
+                .eq('worker_id', workerId)
+                .gte('month', 1) // From January
+                .lte('month', currentMonth)
+                .eq('year', currentYear);
+
+            if (error) throw error;
+
+            // Calculate accumulated values
+            let totalSalary = 0;
+            let totalEmployeeCPF = 0;
+            let totalEmployerCPF = 0;
+
+            // If no payslips exist yet, use current values
+            if (!payslips || payslips.length === 0) {
+                const basicPay = parseFloat(workerDetails.basic_salary_per_day || 0) * totalBasicDays;
+                const otPay = parseFloat(workerDetails.ot_rate_per_hour || 0) * totalOtHours;
+                const sunPhPay = parseFloat(workerDetails.sun_ph_rate_per_day || 0) * totalSunPhDays;
+                const monthlyAllowance = parseFloat(workerDetails.basic_allowance_1 || 0);
+                const incentiveAllowance = parseFloat(workerDetails.incentive_allowance || 0);
+                
+                totalSalary = basicPay + otPay + sunPhPay + monthlyAllowance + incentiveAllowance;
+                
+                // Calculate CPF if it's a local worker
+                if (workerDetails.type === 'local') {
+                    const cpfRates = calculateCPFDeductions(
+                        totalSalary,
+                        workerDetails.birthday ? new Date(workerDetails.birthday) : null,
+                        workerDetails.employee_id
+                    );
+                    totalEmployeeCPF = cpfRates.employeeTotal || 0;
+                    totalEmployerCPF = cpfRates.employerTotal || 0;
+                }
+            } else {
+                // Calculate from existing payslips
+                payslips.forEach(payslip => {
+                    totalSalary += (payslip.basic_pay || 0) + 
+                                 (payslip.ot_pay || 0) + 
+                                 (payslip.sun_ph_pay || 0) + 
+                                 (payslip.monthly_allowance || 0) + 
+                                 (payslip.incentive_allowance || 0) + 
+                                 (payslip.bonus_amount || 0);
+                    totalEmployeeCPF += payslip.cpf_employee_deduction || 0;
+                    totalEmployerCPF += payslip.cpf_employer_contribution || 0;
+                });
+            }
+
+            setTotalAccumulatedSalary(Number(totalSalary.toFixed(2)));
+            setAccumulatedCPFEmployee(Number(totalEmployeeCPF.toFixed(2)));
+            setAccumulatedEmployerCPF(Number(totalEmployerCPF.toFixed(2)));
+
+        } catch (error) {
+            console.error('Error calculating accumulated values:', error);
+            // Set to 0 if error occurs
+            setTotalAccumulatedSalary(0);
+            setAccumulatedCPFEmployee(0);
+            setAccumulatedEmployerCPF(0);
+        }
+    };
 
     const queryClient = useQueryClient();
     const adminEmail = sessionStorage.getItem('adminEmail');
@@ -1049,6 +1180,7 @@ export default function AdminDashboard() {
             if (data && data.length > 0) {
                 const workerIds = [...new Set(data.map(shift => shift.worker_id))];
                 const siteIds = [...new Set(data.map(shift => shift.site_id))];
+                const shiftIds = data.map(shift => shift.id);
 
                 console.log('👥 Fetching workers for IDs:', workerIds);
                 // Fetch workers from consolidated worker_details table
@@ -1068,11 +1200,28 @@ export default function AdminDashboard() {
 
                 if (sitesError) console.error('❌ Sites fetch error:', sitesError);
 
+                const { data: allBreaks, error: breaksError } = await supabase
+                    .from('breaks')
+                    .select('*')
+                    .in('shift_id', shiftIds)
+                    .order('break_start', { ascending: true });
+
+                if (breaksError) console.error('❌ Breaks fetch error:', breaksError);
+
+                const breaksByShiftId = {};
+                if (allBreaks) {
+                    allBreaks.forEach(breakItem => {
+                        if (!breaksByShiftId[breakItem.shift_id]) breaksByShiftId[breakItem.shift_id] = [];
+                        breaksByShiftId[breakItem.shift_id].push(breakItem);
+                    });
+                }
+
                 // Merge data into shifts
                 const shiftsWithData = data.map(shift => ({
                     ...shift,
-                    workers: workers?.find(w => w.worker_id === shift.worker_id) || null,
-                    sites: sites?.find(s => s.id === shift.site_id) || null
+                    workers: workers?.find(w => w.employee_id === shift.worker_id) || null,
+                    sites: sites?.find(s => s.id === shift.site_id) || null,
+                    breaks: breaksByShiftId[shift.id] || []
                 }));
 
                 console.log('🔗 Merged shifts with data:', shiftsWithData.length);
@@ -1392,78 +1541,85 @@ export default function AdminDashboard() {
         setShowWorkerTypeDialog(true);
     };
 
+    // New state for edit worker flow
+    const [pendingEditWorkerId, setPendingEditWorkerId] = useState('');
+    const [showEditWorkerTypeDialog, setShowEditWorkerTypeDialog] = useState(false);
+
     const handleEditWorkerClick = async () => {
         const employeeId = prompt('Enter Employee ID to edit:');
         if (!employeeId) return;
+        
+        // Store the employee ID and show the worker type selection dialog
+        setPendingEditWorkerId(employeeId.trim());
+        setShowEditWorkerTypeDialog(true);
+    };
 
+    // Function to handle worker type selection for editing
+    const handleEditWorkerTypeSelect = (workerType) => {
+        setSelectedWorkerType(workerType);
+        setShowEditWorkerTypeDialog(false);
+        loadWorkerForEdit(pendingEditWorkerId, workerType);
+    };
+
+    // Function to load worker data after type is selected
+    const loadWorkerForEdit = async (employeeId, workerType) => {
         try {
-            // Check both tables to find the worker
-            let workerData = null;
-            let workerType = '';
-
-            // First check local_worker_details
-            const { data: localWorker, error: localError } = await supabase
-                .from('local_worker_details')
+            const tableName = workerType === 'local' ? 'local_worker_details' : 'worker_details';
+            const { data: workerData, error } = await supabase
+                .from(tableName)
                 .select('*')
-                .eq('employee_id', employeeId.trim())
+                .eq('employee_id', employeeId)
                 .single();
 
-            if (!localError && localWorker) {
-                workerData = localWorker;
-                workerType = 'local';
-            } else {
-                // Check worker_details for foreign workers
-                const { data: foreignWorker, error: foreignError } = await supabase
-                    .from('worker_details')
-                    .select('*')
-                    .eq('employee_id', employeeId.trim())
-                    .single();
-
-                if (!foreignError && foreignWorker) {
-                    workerData = foreignWorker;
-                    workerType = 'foreign';
-                }
-            }
-
-            if (!workerData) {
-                toast.error('Worker not found in either local or foreign worker tables');
+            if (error || !workerData) {
+                toast.error(`Worker not found in ${workerType} worker table`);
                 return;
             }
 
-            setSelectedWorkerType(workerType);
-            setWorkerFormData({
+            // Prepare form data based on worker type
+            const formData = {
                 employee_id: workerData.employee_id,
-                nric_fin: workerData.nric_fin,
-                employee_name: workerData.employee_name,
-                designation: workerData.designation,
-                date_joined: workerData.date_joined,
-                bank_account_number: workerData.bank_account_number,
-                ot_rate_per_hour: workerData.ot_rate_per_hour.toString(),
-                sun_ph_rate_per_day: workerData.sun_ph_rate_per_day.toString(),
-                basic_salary_per_day: workerData.basic_salary_per_day.toString(),
-                basic_allowance_1: workerData.basic_allowance_1?.toString() || '150',
-                annual_leave_limit: workerData.annual_leave_limit?.toString() || '10',
-                medical_leave_limit: workerData.medical_leave_limit?.toString() || '14',
-                annual_leave_balance: workerData.annual_leave_balance?.toString() || '10',
-                medical_leave_balance: workerData.medical_leave_balance?.toString() || '14',
+                nric_fin: workerData.nric_fin || '',
+                employee_name: workerData.employee_name || workerData.name || '',
+                designation: workerData.designation || '',
+                date_joined: workerData.date_joined || '',
+                bank_account_number: workerData.bank_account_number || '',
+                ot_rate_per_hour: workerData.ot_rate_per_hour || '',
+                sun_ph_rate_per_day: workerData.sun_ph_rate_per_day || '',
+                basic_salary_per_day: workerData.basic_salary_per_day || '',
+                basic_allowance_1: workerData.basic_allowance_1 || '150',
+                password: workerData.password || workerData.password_hash || '',
+                annual_leave_limit: workerData.annual_leave_limit || '10',
+                medical_leave_limit: workerData.medical_leave_limit || '14',
+                annual_leave_balance: workerData.annual_leave_balance || '10',
+                medical_leave_balance: workerData.medical_leave_balance || '14',
                 // Local worker specific fields
                 birthday: workerData.birthday || '',
-                employer_salary: workerData.employer_salary?.toString() || ''
-            });
+                employer_salary: workerData.employer_salary || '',
+                // Additional fields that might be in either table
+                name: workerData.name || workerData.employee_name || '',
+                password_hash: workerData.password_hash || workerData.password || ''
+            };
 
-            // Pre-calculate for Local workers
-            if (workerType === 'local' && workerData.birthday && workerData.employer_salary) {
+            // If it's a local worker, calculate CPF and SINDA
+            if (workerType === 'local') {
                 const age = calculateAge(workerData.birthday);
-                const cpfEmployee = getCPFEmployeeRate(age);
-                const cpfEmployer = getCPFEmployerRate(age);
-                const sinda = calculateSINDA(parseFloat(workerData.employer_salary));
+                const cpfEmployeeRate = getCPFEmployeeRate(age);
+                const cpfEmployerRate = getCPFEmployerRate(age);
+                const sindaAmount = calculateSINDA(parseFloat(workerData.employer_salary) || 0);
 
-                setCalculatedCPFEmployee(cpfEmployee);
-                setCalculatedCPFEmployer(cpfEmployer);
-                setCalculatedSINDA(sinda);
+                setCalculatedCPFEmployee(cpfEmployeeRate);
+                setCalculatedCPFEmployer(cpfEmployerRate);
+                setCalculatedSINDA(sindaAmount);
+            } else {
+                // Reset CPF and SINDA for foreign workers
+                setCalculatedCPFEmployee(0);
+                setCalculatedCPFEmployer(0);
+                setCalculatedSINDA(0);
             }
 
-            setEditWorkerId(employeeId.trim());
+            setWorkerFormData(formData);
+            setEditWorkerId(employeeId);
             setShowEditWorkerDialog(true);
         } catch (error) {
             console.error('Error fetching worker data:', error);
@@ -1543,13 +1699,46 @@ export default function AdminDashboard() {
     };
 
     const handleEditWorker = () => {
-        if (!workerFormData.employee_id || !workerFormData.employee_name || !workerFormData.nric_fin ||
-            !workerFormData.designation || !workerFormData.date_joined || !workerFormData.bank_account_number ||
-            !workerFormData.ot_rate_per_hour || !workerFormData.sun_ph_rate_per_day || !workerFormData.basic_salary_per_day) {
-            toast.error('Please fill in all required fields');
+        // Common required fields for both worker types
+        const requiredFields = [
+            'employee_id', 'employee_name', 'nric_fin', 'designation', 
+            'date_joined', 'bank_account_number', 'ot_rate_per_hour', 
+            'sun_ph_rate_per_day', 'basic_salary_per_day'
+        ];
+
+        // Additional required fields for local workers
+        if (selectedWorkerType === 'local') {
+            requiredFields.push('birthday', 'employer_salary');
+        }
+
+        // Check all required fields
+        const missingFields = requiredFields.filter(field => !workerFormData[field]);
+        
+        if (missingFields.length > 0) {
+            toast.error(`Please fill in all required fields: ${missingFields.join(', ')}`);
             return;
         }
-        editWorkerMutation.mutate({ employee_id: editWorkerId, workerData: workerFormData });
+
+        // Prepare the data to be saved
+        const workerData = { ...workerFormData };
+        
+        // Ensure numeric fields are properly formatted
+        const numericFields = [
+            'ot_rate_per_hour', 'sun_ph_rate_per_day', 'basic_salary_per_day',
+            'basic_allowance_1', 'annual_leave_limit', 'medical_leave_limit',
+            'annual_leave_balance', 'medical_leave_balance', 'employer_salary'
+        ];
+        
+        numericFields.forEach(field => {
+            if (workerData[field] !== undefined && workerData[field] !== '') {
+                workerData[field] = parseFloat(workerData[field]);
+            }
+        });
+
+        editWorkerMutation.mutate({ 
+            employee_id: editWorkerId, 
+            workerData: workerData 
+        });
     };
 
     const handleDeleteWorker = () => {
@@ -1613,9 +1802,15 @@ export default function AdminDashboard() {
             'Worker ID': s.worker_id,
             'Site': s.sites?.site_name || 'Unknown',
             'Entry Time': s.entry_time ? formatTime(s.entry_time) : '',
-            'Break Start': s.lunch_start ? formatTime(s.lunch_start) : '',
-            'Break End': s.lunch_end ? formatTime(s.lunch_end) : '',
-            'Leave Time': s.leave_time ? formatTime(s.leave_time) : '',
+            'Breaks': (s.breaks && s.breaks.length > 0)
+                ? s.breaks
+                    .map((b, i) => `Break ${i + 1}: ${b.break_start ? formatTime(b.break_start) : ''}${b.break_end ? ` - ${formatTime(b.break_end)}` : ''}`)
+                    .join(' | ')
+                : '',
+            'Break Hours': (s.entry_time && s.leave_time)
+                ? calculateShiftHours(s.entry_time, s.leave_time, s.breaks || [], s.work_date).breakHours
+                : 0,
+            'Exit Time': s.leave_time ? formatTime(s.leave_time) : '',
             'Worked Hours': s.worked_hours || 0,
             'Sunday Hours': s.sunday_hours || 0,
             'OT Hours': s.ot_hours || 0,
@@ -1646,6 +1841,17 @@ export default function AdminDashboard() {
 
     const printTimesheetAndPayslip = async (workerId, month, year, deductions = [], salaryPaidDate = '') => {
         try {
+            // Initialize all time tracking and financial variables
+            let monthlyBasicHours = 0;
+            let totalWorkedHours = 0;
+            let monthlySundayHours = 0;
+            let monthlyOtHours = 0;
+            let totalOtHours = 0;
+            let loan1 = 0; // Initialize loan1 with 0
+            let totalSunPhHours = 0;
+            let totalBasicDays = 0;
+            let totalSunPhDays = 0;
+            
             // Get all shifts for the worker in the specified month
             const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
             const endDate = new Date(year, month + 1, 1).toISOString().split('T')[0];
@@ -1737,6 +1943,9 @@ export default function AdminDashboard() {
                 workerDetails = foreignWorker;
                 workerType = 'foreign';
             }
+            
+            // Extract worker name from the appropriate field based on worker type
+            const workerName = workerDetails.employee_name || workerDetails.name || 'Unknown Worker';
 
             console.log('Worker details:', workerDetails, 'Worker type:', workerType);
 
@@ -1777,10 +1986,25 @@ export default function AdminDashboard() {
                     .select('id, site_name')
                     .in('id', siteIds);
 
-                // Merge data into shifts (use lunch_start/lunch_end from shifts table)
+                const { data: allBreaks } = await supabase
+                    .from('breaks')
+                    .select('*')
+                    .in('shift_id', shiftIds)
+                    .order('break_start', { ascending: true });
+
+                const breaksByShiftId = {};
+                if (allBreaks) {
+                    allBreaks.forEach(breakItem => {
+                        if (!breaksByShiftId[breakItem.shift_id]) breaksByShiftId[breakItem.shift_id] = [];
+                        breaksByShiftId[breakItem.shift_id].push(breakItem);
+                    });
+                }
+
+                // Merge data into shifts
                 workerShifts.forEach(shift => {
                     shift.workers = workers;
                     shift.sites = sites?.find(s => s.id === shift.site_id) || null;
+                    shift.breaks = breaksByShiftId[shift.id] || [];
                 });
             }
 
@@ -1792,43 +2016,31 @@ export default function AdminDashboard() {
                     groupedShiftsByDate[dateKey] = [];
                 }
                 groupedShiftsByDate[dateKey].push(shift);
+
+                // Process each shift
+                if (shift.leave_type) {
+                    // Don't add leave hours to actual worked hours
+                    return;
+                } else if (shift.has_left) {
+                    // Work shifts: add to all hour categories
+                    const recalc = calculateShiftHours(
+                        shift.entry_time,
+                        shift.leave_time,
+                        shift.breaks || [],
+                        shift.work_date
+                    );
+                    monthlyBasicHours += recalc.basicHours;
+                    totalWorkedHours += recalc.basicHours; // Only actual worked hours
+                    monthlySundayHours += recalc.sundayHours;
+                    monthlyOtHours += recalc.otHours;
+                    totalOtHours = monthlyOtHours; // Ensure totalOtHours is set
+                }
             });
 
-            console.log('Shifts grouped by date:', groupedShiftsByDate);
-
-        const workerName = workerShifts[0]?.workers?.employee_name || 'Unknown Worker';
-
-        // Calculate monthly totals for payslip using recalculated values
-        let monthlyBasicHours = 0;
-        let totalWorkedHours = 0; // Actual worked hours only
-        let monthlySundayHours = 0;
-        let monthlyOtHours = 0;
-
-        workerShifts.forEach(shift => {
-            if (shift.leave_type) {
-                // Leave shifts: only add to basic hours (leave entitlement for salary)
-                monthlyBasicHours += shift.worked_hours || 0;
-                // Don't add leave hours to actual worked hours
-            } else if (shift.has_left) {
-                // Work shifts: add to all hour categories
-                const recalc = calculateShiftHours(
-                    shift.entry_time,
-                    shift.leave_time,
-                    shift.lunch_start,
-                    shift.work_date,
-                    shift.lunch_end
-                );
-                monthlyBasicHours += recalc.basicHours;
-                totalWorkedHours += recalc.basicHours; // Only actual worked hours
-                monthlySundayHours += recalc.sundayHours;
-                monthlyOtHours += recalc.otHours;
-            }
-        });
-
         totalWorkedHours = totalWorkedHours + monthlyOtHours + monthlySundayHours;
-        const totalSunPhHours = monthlySundayHours;
-        const totalBasicDays = monthlyBasicHours / 8;
-        const totalSunPhDays = monthlySundayHours / 8;
+        totalSunPhHours = monthlySundayHours;
+        totalBasicDays = monthlyBasicHours / 8;
+        totalSunPhDays = monthlySundayHours / 8;
 
         // Calculate payslip values (stored value is MONTHLY salary, not daily)
         const monthlyBasicSalary = workerDetails.basic_salary_per_day; // This is actually monthly salary
@@ -1841,19 +2053,15 @@ export default function AdminDashboard() {
         const excessOtHours = Math.max(monthlyOtHours - maxPayableOtHours, 0);
 
         const otPay = payableOtHours * workerDetails.ot_rate_per_hour;
-        const allowance2 = excessOtHours * workerDetails.ot_rate_per_hour; // Excess OT paid as Allowance 2
+        // Calculate Incentive Allowance (excess OT)
+        const incentiveAllowance = excessOtHours * workerDetails.ot_rate_per_hour;
 
         const sunPhPay = totalSunPhDays * workerDetails.sun_ph_rate_per_day; // Sun/PH at individual rate from database
-        const allowance1 = (workerDetails.basic_allowance_1 || 150) * (totalBasicDays / workingDaysData.working_days);
+        
+        // Calculate Monthly Allowance (from worker details, no fallback to 150)
+        const monthlyAllowance = workerDetails.basic_allowance_1 * (totalBasicDays / workingDaysData.working_days);
+        
         const bonusAmount = parseFloat(printBonus) || 0;
-        const totalAdditions = basicPay + otPay + sunPhPay + allowance1 + allowance2 + bonusAmount;
-
-        // Calculate deductions total
-        const totalDeductions = deductions.reduce((sum, deduction) => {
-            return sum + (parseFloat(deduction.amount) || 0);
-        }, 0);
-
-        const netTotalPay = totalAdditions - totalDeductions;
 
         // Calculate CPF, SINDA, SDL for Local workers
         let cpfEmployeeDeduction = 0;
@@ -1863,51 +2071,102 @@ export default function AdminDashboard() {
 
         if (workerType === 'local') {
             // Calculate CPF Employee deduction (from employee's salary)
-            cpfEmployeeDeduction = calculateCPFDeductions(totalAdditions, workerDetails.cpf_employee_contribution, 0).employeeDeduction;
+            cpfEmployeeDeduction = calculateCPFDeductions(
+                basicPay + monthlyAllowance + incentiveAllowance + sunPhPay + bonusAmount, 
+                workerDetails.cpf_employee_contribution, 
+                0
+            ).employeeDeduction;
 
             // Calculate CPF Employer contribution (from employer salary, not deducted)
-            cpfEmployerContribution = calculateCPFDeductions(workerDetails.employer_salary, 0, workerDetails.cpf_employer_contribution).employerContribution;
+            cpfEmployerContribution = calculateCPFDeductions(
+                workerDetails.employer_salary, 
+                0, 
+                workerDetails.cpf_employer_contribution
+            ).employerContribution;
 
             // Calculate SINDA deduction from employee's total additions
-            sindaDeduction = calculateSINDA(totalAdditions);
+            sindaDeduction = calculateSINDA(basicPay + monthlyAllowance + incentiveAllowance + sunPhPay + bonusAmount);
 
-            // Calculate SDL contribution (not deducted)
+            // Calculate SDL contribution (0.25% of monthly wages, capped at $4,500)
+            // Min $2, Max $11.25, added to employer cost
             sdlContribution = calculateSDL(workerDetails.employer_salary);
-
-            console.log('Local worker calculations:', {
-                cpfEmployeeDeduction,
-                cpfEmployerContribution,
-                sindaDeduction,
-                sdlContribution
-            });
         }
 
+        // Calculate total deductions (CPF Employee + SINDA + other deductions)
+        const totalDeductions = deductions.reduce((sum, deduction) => {
+            return sum + (parseFloat(deduction.amount) || 0);
+        }, 0) + cpfEmployeeDeduction + sindaDeduction;
+
+        // Calculate total additions (Basic + OT + Sunday/PH + Allowances + Bonus + SDL)
+        const totalAdditions = basicPay + otPay + sunPhPay + monthlyAllowance + incentiveAllowance + bonusAmount + sdlContribution;
+
+        // Net Pay = Total Additions - Total Deductions
+        const netTotalPay = totalAdditions - totalDeductions;
+
+        console.log('Local worker calculations:', {
+            cpfEmployeeDeduction,
+            cpfEmployerContribution,
+            sindaDeduction,
+            sdlContribution,
+            totalAdditions,
+            totalDeductions,
+            netTotalPay
+        });
+
         // Calculate accumulated totals for Local workers
-        let totalAccumulatedSalary = 0;
-        let accumulatedCPFEmployee = 0;
-        let accumulatedEmployerCPF = 0;
+        let accumulatedSalary = 0;
+        let cpfEmployeeAccumulated = 0;
+        let employerCPFAccumulated = 0;
 
         if (workerType === 'local') {
             try {
-                // Get all payslip history for this worker
+                // Get all payslip history for this worker in the current year
                 const { data: payslipHistory, error: historyError } = await supabase
                     .from('payslip_history')
-                    .select('total_additions, cpf_employee_deduction, cpf_employer_contribution')
+                    .select('total_additions, cpf_employee_deduction, cpf_employer_contribution, payslip_month')
                     .eq('worker_id', workerId)
+                    .eq('payslip_year', year)  // Only get records for the current year
                     .order('payslip_month', { ascending: true });
 
-                if (!historyError && payslipHistory) {
-                    payslipHistory.forEach(payslip => {
-                        totalAccumulatedSalary += payslip.total_additions || 0;
-                        accumulatedCPFEmployee += payslip.cpf_employee_deduction || 0;
-                        accumulatedEmployerCPF += payslip.cpf_employer_contribution || 0;
-                    });
+                if (!historyError) {
+                    if (payslipHistory && payslipHistory.length > 0) {
+                        // Sum up all historical values for the current year
+                        payslipHistory.forEach(payslip => {
+                            // Only add if it's not the current month's payslip (to avoid double-counting)
+                            if (payslip.payslip_month !== month) {
+                                accumulatedSalary += Number(payslip.total_additions) || 0;
+                                cpfEmployeeAccumulated += Number(payslip.cpf_employee_deduction) || 0;
+                                employerCPFAccumulated += Number(payslip.cpf_employer_contribution) || 0;
+                            }
+                        });
+                    }
+                    
+                    // If no payslips for the current year or only the current month exists, use current values
+                    if (payslipHistory.length === 0 || (payslipHistory.length === 1 && payslipHistory[0].payslip_month === month)) {
+                        // For the first payslip of the year, use current values as starting point
+                        accumulatedSalary = totalAdditions;
+                        cpfEmployeeAccumulated = cpfEmployeeDeduction;
+                        employerCPFAccumulated = cpfEmployerContribution;
+                    } else {
+                        // Add current month's values to the accumulated totals
+                        accumulatedSalary += totalAdditions;
+                        cpfEmployeeAccumulated += cpfEmployeeDeduction;
+                        employerCPFAccumulated += cpfEmployerContribution;
+                    }
+                } else {
+                    // If error occurred, use current values as fallback
+                    accumulatedSalary = totalAdditions;
+                    cpfEmployeeAccumulated = cpfEmployeeDeduction;
+                    employerCPFAccumulated = cpfEmployerContribution;
                 }
 
                 console.log('Accumulated totals calculated:', {
-                    totalAccumulatedSalary,
-                    accumulatedCPFEmployee,
-                    accumulatedEmployerCPF
+                    accumulatedSalary,
+                    cpfEmployeeAccumulated,
+                    employerCPFAccumulated,
+                    currentMonthAdditions: totalAdditions,
+                    currentMonthCPF: cpfEmployeeDeduction,
+                    currentMonthEmployerCPF: cpfEmployerContribution
                 });
             } catch (error) {
                 console.error('Error calculating accumulated totals:', error);
@@ -1924,8 +2183,8 @@ export default function AdminDashboard() {
                 basic_pay: basicPay,
                 ot_pay: otPay,
                 sun_ph_pay: sunPhPay,
-                allowance1: allowance1,
-                allowance2: allowance2,
+                monthly_allowance: monthlyAllowance,
+                incentive_allowance: incentiveAllowance,
                 total_additions: totalAdditions,
                 cpf_employee_deduction: cpfEmployeeDeduction,
                 sinda_deduction: sindaDeduction,
@@ -2086,55 +2345,95 @@ export default function AdminDashboard() {
                             page-break-before: always;
                         }
                         @media print {
-                            body {
-                                background: white !important;
-                                padding: 15px !important;
-                                margin: 0 !important;
-                                font-size: 12px !important;
-                            }
-                            .header {
-                                margin-bottom: 15px !important;
-                                padding-bottom: 12px !important;
-                            }
-                            .company-name {
-                                font-size: 20px !important;
-                            }
-                            .company-address {
-                                font-size: 11px !important;
-                            }
-                            table {
-                                font-size: 10px !important;
-                            }
-                            th, td {
-                                padding: 6px 8px !important;
-                            }
-                            .worker-info, .worker-info-grid {
-                                margin: 12px 0 !important;
-                                padding: 12px !important;
-                                font-size: 11px !important;
-                            }
-                            .totals, .salary-breakdown {
-                                margin: 15px 0 !important;
-                            }
-                            .salary-header {
-                                padding: 10px !important;
-                                font-size: 12px !important;
-                            }
-                            .salary-row {
-                                padding: 8px 10px !important;
-                                font-size: 11px !important;
-                            }
-                            .signature-section {
-                                margin-top: 25px !important;
-                            }
-                            .signature-line {
-                                width: 150px !important;
-                                height: 35px !important;
-                                margin-top: 20px !important;
-                            }
                             @page {
                                 size: A4 portrait;
-                                margin: 0.5in;
+                                margin: 10mm 10mm 10mm 10mm;
+                            }
+                            body {
+                                background: white !important;
+                                padding: 0 !important;
+                                margin: 0 !important;
+                                font-size: 10px !important;
+                                line-height: 1.2;
+                                -webkit-print-color-adjust: exact;
+                                print-color-adjust: exact;
+                            }
+                            .header {
+                                margin: 0 0 8px 0 !important;
+                                padding: 0 !important;
+                                page-break-after: avoid;
+                            }
+                            .company-name {
+                                font-size: 14px !important;
+                                margin: 0;
+                            }
+                            .company-address {
+                                font-size: 10px !important;
+                                margin: 2px 0 8px 0;
+                            }
+                            table {
+                                font-size: 9px !important;
+                                width: 100% !important;
+                                margin: 5px 0 10px 0 !important;
+                                page-break-inside: auto;
+                            }
+                            th, td {
+                                padding: 4px 6px !important;
+                                font-size: 9px !important;
+                                line-height: 1.1;
+                            }
+                            .worker-info {
+                                margin: 5px 0 8px 0 !important;
+                                padding: 0 !important;
+                                font-size: 10px !important;
+                                page-break-after: avoid;
+                            }
+                            .worker-info-grid {
+                                display: grid;
+                                grid-template-columns: 1fr 1fr;
+                                gap: 8px;
+                                margin: 5px 0 8px 0 !important;
+                                padding: 0 !important;
+                                font-size: 10px !important;
+                                page-break-after: avoid;
+                            }
+                            .totals {
+                                margin: 8px 0 !important;
+                                padding: 8px !important;
+                                font-size: 10px !important;
+                                page-break-inside: avoid;
+                            }
+                            .salary-breakdown {
+                                margin: 8px 0 !important;
+                                font-size: 10px !important;
+                                page-break-inside: avoid;
+                            }
+                            .salary-header {
+                                padding: 6px 8px !important;
+                                font-size: 11px !important;
+                            }
+                            .salary-row {
+                                padding: 4px 8px !important;
+                                font-size: 10px !important;
+                                page-break-inside: avoid;
+                            }
+                            .signature-section {
+                                margin-top: 15px !important;
+                                page-break-inside: avoid;
+                            }
+                            .signature-line {
+                                width: 100px !important;
+                                height: 20px !important;
+                                margin-top: 10px !important;
+                                border-bottom: 1px solid #000;
+                            }
+                            .page-break {
+                                page-break-before: always;
+                                margin: 0;
+                                padding: 0;
+                            }
+                            .avoid-break {
+                                page-break-inside: avoid;
                             }
                         }
                     </style>
@@ -2158,15 +2457,15 @@ export default function AdminDashboard() {
                             <tr>
                                 <th>Date</th>
                                 <th>Entry</th>
-                                <th>Leave</th>
+                                <th>Exit</th>
                                 <th>Break</th>
-                                <th>OT Hours</th>
-                                <th>Basic Hours</th>
-                                <th>Sun/PH Hours</th>
-                                <th>Total Worked Hours</th>
-                                <th>Basic Days</th>
-                                <th>Sun/PH Days</th>
-                                <th>Type of Leave</th>
+                                <th>OT</th>
+                                <th>Basic</th>
+                                <th>Sun/PH</th>
+                                <th>Total</th>
+                                <th>Basic D</th>
+                                <th>PH D</th>
+                                <th>Leave Type</th>
                                 <th>Site</th>
                             </tr>
                         </thead>
@@ -2207,9 +2506,8 @@ export default function AdminDashboard() {
                 const recalc = calculateShiftHours(
                     shift.entry_time,
                     shift.leave_time,
-                    shift.lunch_start,
-                    shift.work_date,
-                    shift.lunch_end
+                    shift.breaks || [],
+                    shift.work_date
                 );
                 totalBasicHours += recalc.basicHours;
                 totalSundayHours += recalc.sundayHours;
@@ -2218,8 +2516,10 @@ export default function AdminDashboard() {
                 shiftDetails.push({
                     entry: shift.entry_time ? formatTime(shift.entry_time) : '',
                     leave: shift.leave_time ? formatTime(shift.leave_time) : '',
-                    lunch: (shift.lunch_start && shift.lunch_end)
-                        ? `${formatTime(shift.lunch_start)} - ${formatTime(shift.lunch_end)}`
+                    lunch: (shift.breaks && shift.breaks.length > 0)
+                        ? shift.breaks
+                            .map((b, i) => `B${i + 1} ${b.break_start ? formatTime(b.break_start) : ''}${b.break_end ? `-${formatTime(b.break_end)}` : ''}`)
+                            .join(' | ')
                         : '',
                     site: shift.sites?.site_name || '',
                     basicHours: recalc.basicHours,
@@ -2324,12 +2624,12 @@ export default function AdminDashboard() {
                     <td>${entryTimes}</td>
                     <td>${leaveTimes}</td>
                 <td>${lunchTimes}</td>
-                    <td>${shiftDetails.length > 0 ? shiftDetails[0].otHours.toFixed(2) : '0.00'}</td>
-                    <td>${shiftDetails.length > 0 ? shiftDetails[0].basicHours.toFixed(2) : '0.00'}</td>
-                    <td>${shiftDetails.length > 0 ? shiftDetails[0].sundayHours.toFixed(2) : '0.00'}</td>
-                    <td>${(shiftDetails.length > 0 ? shiftDetails[0].basicHours + shiftDetails[0].sundayHours + shiftDetails[0].otHours : 0).toFixed(2)}</td>
-                    <td>${shiftDetails.length > 0 ? (shiftDetails[0].basicHours / 8).toFixed(2) : '0.00'}</td>
-                    <td>${shiftDetails.length > 0 ? (shiftDetails[0].sundayHours / 8).toFixed(2) : '0.00'}</td>
+                    <td>${totalOtHours.toFixed(2)}</td>
+                    <td>${totalBasicHours.toFixed(2)}</td>
+                    <td>${totalSundayHours.toFixed(2)}</td>
+                    <td>${totalWorkedHours.toFixed(2)}</td>
+                    <td>${basicDays.toFixed(2)}</td>
+                    <td>${sundayDays.toFixed(2)}</td>
                     <td>${leaveType || ''}</td>
                     <td>${siteNames}</td>
                 </tr>
@@ -2340,78 +2640,18 @@ export default function AdminDashboard() {
                         </tbody>
                     </table>
 
-                    <div class="totals">
-                        <h3>Monthly Summary</h3>
-                        <p><strong>Basic Hours:</strong> ${monthlyBasicHours.toFixed(2)}</p>
-                        <p><strong>OT Hours:</strong> ${monthlyOtHours.toFixed(2)}</p>
-                        <p><strong>Total Worked Hours:</strong> ${totalWorkedHours.toFixed(2)}</p>
-                        <p><strong>Total Sun/PH Hours:</strong> ${totalSunPhHours.toFixed(2)}</p>
-                        <p><strong>Basic Days:</strong> ${totalBasicDays.toFixed(2)}</p>
-                        <p><strong>Sun/PH Days:</strong> ${totalSunPhDays.toFixed(2)}</p>
+                    <div class="totals" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 10px;">
+                        <div><strong>Basic Hours:</strong> ${monthlyBasicHours.toFixed(2)}</div>
+                        <div><strong>OT Hours:</strong> ${monthlyOtHours.toFixed(2)}</div>
+                        <div><strong>Worked Hours:</strong> ${totalWorkedHours.toFixed(2)}</div>
+                        <div><strong>Sun/PH Hours:</strong> ${totalSunPhHours.toFixed(2)}</div>
+                        <div><strong>Basic Days:</strong> ${totalBasicDays.toFixed(2)}</div>
+                        <div><strong>Sun/PH Days:</strong> ${totalSunPhDays.toFixed(2)}</div>
                     </div>
 
                         ${workerType === 'local' ? `
-                        <!-- PAGE BREAK FOR ACCUMULATED TOTALS -->
-                        <div class="page-break"></div>
-
-                        <div class="header">
-                            <h1 class="company-name">AKK ENGINEERING PTE. LTD.</h1>
-                            <p class="company-address">15 Kaki Bukit Rd 4, #01-50, Singapore 417808</p>
-                            <h2 style="margin-top: 10px; color: #333; font-size: 14px;">Accumulated Contributions Summary</h2>
-                        </div>
-
-                        <div class="worker-info">
-                            <strong>Worker Name:</strong> ${workerName}<br>
-                            <strong>Worker ID:</strong> ${workerId}<br>
-                            <strong>As of Month/Year:</strong> ${String(month).padStart(2, '0')}/${year}
-                        </div>
-
-                        <div class="salary-breakdown">
-                            <div class="salary-header">Year-to-Date Totals</div>
-
-                            <div class="salary-row">
-                                <div class="salary-label">Total Accumulated Salary</div>
-                                <div class="salary-amount">$${totalAccumulatedSalary.toFixed(2)}</div>
-                            </div>
-
-                            <div class="salary-row">
-                                <div class="salary-label">Accumulated CPF Employee Contributions</div>
-                                <div class="salary-amount">$${accumulatedCPFEmployee.toFixed(2)}</div>
-                            </div>
-
-                            <div class="salary-row">
-                                <div class="salary-label">Accumulated CPF Employer Contributions</div>
-                                <div class="salary-amount">$${accumulatedEmployerCPF.toFixed(2)}</div>
-                            </div>
-
-                            <div class="salary-row">
-                                <div class="salary-label">Total CPF Accumulated</div>
-                                <div class="salary-amount">$${(accumulatedCPFEmployee + accumulatedEmployerCPF).toFixed(2)}</div>
-                            </div>
-                        </div>
-
-                        <div class="signature-section">
-                            <div>
-                                <div class="signature-line"></div>
-                                <p><strong>Director Signature</strong></p>
-                            </div>
-                            <div>
-                                <div class="signature-line"></div>
-                                <p><strong>Employee Signature</strong></p>
-                            </div>
-                        </div>
+                        <!-- Removed duplicate accumulated totals section as it's now in the payslip -->
                         ` : ''}
-
-                        <div class="signature-section">
-                            <div>
-                                <div class="signature-line"></div>
-                                <p><strong>Worker Signature</strong></p>
-                            </div>
-                            <div>
-                                <div class="signature-line"></div>
-                                <p><strong>Director Signature</strong></p>
-                            </div>
-                        </div>
 
                     <!-- PAGE BREAK -->
                     <div class="page-break"></div>
@@ -2420,139 +2660,309 @@ export default function AdminDashboard() {
                     <div class="header">
                         <h1 class="company-name">AKK ENGINEERING PTE. LTD.</h1>
                         <p class="company-address">15 Kaki Bukit Rd 4, #01-50, Singapore 417808</p>
-                        <h2 style="margin-top: 10px; color: #333; font-size: 14px;">Salary Slip</h2>
+                        <h2 class="report-title">Salary Slip</h2>
                     </div>
 
-                    <div class="worker-info">
-                        <div class="worker-info-grid">
-                            <div>
-                                <strong>NRIC/FIN:</strong> ${workerDetails.nric_fin}<br>
-                                <strong>Employee ID:</strong> ${workerDetails.employee_id}<br>
-                                <strong>Employee Name:</strong> ${workerDetails.employee_name}<br>
-                                <strong>Designation:</strong> ${workerDetails.designation}
+                    <div class="worker-info" style="margin: 20px 0; background: #fff9c4; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+                        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 20px;">
+                            <div style="display: flex; align-items: center; min-height: 30px;">
+                                <span style="color: #5f6368; min-width: 90px; font-size: 12px;">NRIC/FIN:</span>
+                                <span style="font-weight: 500; font-size: 12.5px;">${workerDetails.nric_fin || 'N/A'}</span>
                             </div>
-                            <div>
-                                <strong>Month & Year:</strong> ${String(month).padStart(2, '0')}/${year}<br>
-                                <strong>Date Joined:</strong> ${workerDetails.date_joined}<br>
-                                <strong>Bank Account:</strong> ${workerDetails.bank_account_number}<br>
-                                <strong>Salary Paid Date:</strong> ${salaryPaidDate || 'Not specified'}
+                            <div style="display: flex; align-items: center; min-height: 30px;">
+                                <span style="color: #5f6368; min-width: 90px; font-size: 12px;">Employee ID:</span>
+                                <span style="font-weight: 500; font-size: 12.5px;">${workerDetails.employee_id || 'N/A'}</span>
+                            </div>
+                            <div style="display: flex; align-items: center; min-height: 30px;">
+                                <span style="color: #5f6368; min-width: 90px; font-size: 12px;">Name:</span>
+                                <span style="font-weight: 500; font-size: 12.5px;">${workerDetails.employee_name || 'N/A'}</span>
+                            </div>
+                            <div style="display: flex; align-items: center; min-height: 30px;">
+                                <span style="color: #5f6368; min-width: 90px; font-size: 12px;">Period:</span>
+                                <span style="font-weight: 500; font-size: 12.5px;">${String(month).padStart(2, '0')}/${year}</span>
+                            </div>
+                            <div style="display: flex; align-items: center; min-height: 30px;">
+                                <span style="color: #5f6368; min-width: 90px; font-size: 12px;">Bank:</span>
+                                <span style="font-weight: 500; font-size: 12.5px;">${workerDetails.bank_account_number || 'Cash'}</span>
+                            </div>
+                            <div style="display: flex; align-items: center; min-height: 30px;">
+                                <span style="color: #5f6368; min-width: 90px; font-size: 12px;">Pay Date:</span>
+                                <span style="font-weight: 500; font-size: 12.5px;">${salaryPaidDate || 'Not specified'}</span>
                             </div>
                         </div>
                     </div>
 
-                        <div class="salary-breakdown">
-                        <div class="salary-header">Salary Breakdown</div>
-
-                        <div class="salary-row">
-                            <div class="salary-label">Basic Pay</div>
-                            <div class="salary-amount">$${basicPay.toFixed(2)}</div>
+                        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
+                        <style>
+                            @page {
+                                size: A4;
+                                margin: 12mm 15mm 15mm 15mm;
+                            }
+                            body {
+                                font-family: 'Poppins', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                                font-size: 11px;
+                                line-height: 1.4;
+                                margin: 0;
+                                padding: 0;
+                                -webkit-print-color-adjust: exact;
+                                print-color-adjust: exact;
+                                background-color: #fffde7;
+                                color: #333;
+                            }
+                            .page-break {
+                                page-break-after: always;
+                            }
+                            .header {
+                                text-align: center;
+                                margin-bottom: 8px;
+                                page-break-after: avoid;
+                            }
+                            .company-name {
+                                font-size: 14px;
+                                font-weight: bold;
+                                margin: 0;
+                            }
+                            .company-address {
+                                margin: 2px 0 8px 0;
+                                font-size: 10px;
+                            }
+                            .report-title {
+                                font-size: 12px;
+                                margin: 0 0 10px 0;
+                                border-bottom: 1px solid #000;
+                                padding-bottom: 5px;
+                                page-break-after: avoid;
+                            }
+                            .worker-info {
+                                margin-bottom: 8px;
+                                page-break-after: avoid;
+                            }
+                            .salary-container {
+                                display: grid;
+                                grid-template-columns: repeat(2, 1fr);
+                                gap: 10px;
+                                margin: 15px 0 10px 0;
+                                page-break-inside: avoid;
+                            }
+                            .additions-column {
+                                display: grid;
+                                grid-template-columns: 1fr 1fr;
+                                gap: 12px;
+                            }
+                            .deductions-column {
+                                display: grid;
+                                grid-template-columns: 1fr 1fr;
+                                gap: 12px;
+                            }
+                            .salary-box {
+                                border: 1px solid #e0e0e0;
+                                border-radius: 6px;
+                                padding: 10px 12px;
+                                background-color: #fff;
+                                page-break-inside: avoid;
+                                transition: all 0.2s;
+                                box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+                                margin-bottom: 12px;
+                                min-height: 80px;
+                                display: flex;
+                                flex-direction: column;
+                                justify-content: center;
+                            }
+                            .addition-box {
+                                background-color: #f1f8e9;
+                                border: 1px solid #c8e6c9;
+                                border-left: 3px solid #2e7d32;
+                            }
+                            .deduction-box {
+                                background-color: #ffebee;
+                                border: 1px solid #ffcdd2;
+                                border-left: 3px solid #c62828;
+                            }
+                            .employer-box {
+                                background-color: #f5f5f5;
+                                border: 1px solid #e0e0e0;
+                                border-left: 3px solid #616161;
+                                color: #212121;
+                            }
+                            .amount-large {
+                                font-size: 14px;
+                                font-weight: 600;
+                                margin: 0 0 4px 0;
+                                color: #1b5e20;
+                                letter-spacing: 0.2px;
+                                font-family: 'Poppins', sans-serif;
+                            }
+                            .amount-label {
+                                font-size: 11px;
+                                color: #5f6368;
+                                line-height: 1.3;
+                                font-weight: 500;
+                            }
+                            .net-pay-box {
+                                border: 2px solid #4caf50;
+                                border-radius: 8px;
+                                padding: 12px;
+                                text-align: center;
+                                margin: 10px 0;
+                                background-color: #e8f5e9;
+                                page-break-inside: avoid;
+                                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                            }
+                            .net-pay-amount {
+                                font-size: 14px;
+                                font-weight: 700;
+                                color: #333;
+                                margin: 2px 0 0 0;
+                            }
+                            .totals-section {
+                                display: flex;
+                                gap: 6px;
+                                margin: 8px 0;
+                                page-break-inside: avoid;
+                            }
+                            .total-box {
+                                flex: 1;
+                                border: 1px solid #ddd;
+                                border-radius: 4px;
+                                padding: 6px;
+                                text-align: center;
+                                background-color: #f8f9fa;
+                            }
+                            .signature-section {
+                                margin-top: 12px;
+                                display: flex;
+                                justify-content: space-between;
+                                text-align: center;
+                                page-break-inside: avoid;
+                            }
+                            .signature-box {
+                                width: 45%;
+                            }
+                            .signature-line {
+                                border-bottom: 1px solid #333;
+                                height: 16px;
+                                margin: 0 auto;
+                                width: 80%;
+                            }
+                            .signature-label {
+                                font-size: 9px;
+                                margin-top: 2px;
+                            }
+                            @media print {
+                                body {
+                                    padding: 5mm !important;
+                                    font-size: 9px !important;
+                                }
+                                .no-print {
+                                    display: none !important;
+                                .page-break {
+                                    page-break-after: always;
+                                }
+                                .avoid-break {
+                                    page-break-inside: avoid;
+                                }
+                            </style>
+                                </div>
+                        <!-- Salary Details in 2x2 Grid -->
+                        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 15px 0;">
+                            <!-- Column 1: Basic Pay, OT Pay -->
+                            <div class="salary-box addition-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">$${basicPay.toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">Basic Pay (${totalBasicDays}d)</div>
+                            </div>
+                            <div class="salary-box addition-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">$${otPay.toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">OT Pay (${totalOtHours}h)</div>
+                            </div>
+                            
+                            <!-- Column 2: Sun/PH, Monthly Allowance -->
+                            <div class="salary-box addition-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">$${sunPhPay.toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">Sun/PH (${totalSunPhDays}d)</div>
+                            </div>
+                            <div class="salary-box addition-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">$${monthlyAllowance.toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">Monthly Allowance</div>
+                            </div>
+                            
+                            <!-- Column 3: Incentive, SDL -->
+                            <div class="salary-box addition-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">$${incentiveAllowance.toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">Incentive</div>
+                            </div>
+                            <div class="salary-box addition-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">$${sdlContribution.toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">SDL</div>
+                            </div>
+                            
+                            <!-- Column 4: Bonus, Loan 1, CPF Employee, SINDA, CPF Employer -->
+                            <div class="salary-box addition-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">$${bonusAmount.toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">Bonus</div>
+                            </div>
+                            <div class="salary-box deduction-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">-$${Math.abs(loan1).toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">Loan 1</div>
+                            </div>
+                            <div class="salary-box deduction-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">-$${Math.abs(cpfEmployeeDeduction).toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">CPF Employee</div>
+                            </div>
+                            <div class="salary-box deduction-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">-$${Math.abs(sindaDeduction).toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">SINDA</div>
+                            </div>
+                            <div class="salary-box employer-box" style="padding: 6px 8px;">
+                                <div class="amount-large" style="font-size: 14px;">$${cpfEmployerContribution.toFixed(2)}</div>
+                                <div class="amount-label" style="font-size: 11px;">CPF Employer</div>
+                            </div>
                         </div>
 
-                        <div class="salary-row">
-                            <div class="salary-label">Basic Days</div>
-                            <div class="salary-amount">${totalBasicDays.toFixed(2)}</div>
+                        <!-- Totals Row -->
+                        <div style="display: flex; gap: 8px; margin: 10px 0;">
+                            <div class="salary-box" style="flex: 1; display: flex; justify-content: space-between; align-items: center; background-color: #e8f5e9; border: 1px solid #81c784; padding: 8px 12px;">
+                                <span class="amount-label" style="font-weight: 600; font-size: 12px;">TOTAL ADDITIONS</span>
+                                <span class="amount-large" style="color: #2e7d32; font-size: 14px; font-weight: 600;">$${totalAdditions.toFixed(2)}</span>
+                            </div>
+                            <div class="salary-box" style="flex: 1; display: flex; justify-content: space-between; align-items: center; background-color: #ffebee; border: 1px solid #ef9a9a; padding: 8px 12px;">
+                                <span class="amount-label" style="font-weight: 600; font-size: 12px;">TOTAL DEDUCTIONS</span>
+                                <span class="amount-large" style="color: #c62828; font-size: 14px; font-weight: 600;">-$${Math.abs(totalDeductions).toFixed(2)}</span>
+                            </div>
                         </div>
 
-                        <div class="salary-row">
-                            <div class="salary-label">OT Pay (≤72hrs)</div>
-                            <div class="salary-amount">$${otPay.toFixed(2)}</div>
+                        <!-- Net Pay -->
+                        <div class="salary-box" style="background-color: #e3f2fd; text-align: center; padding: 15px; border: 2px solid #1976d2; margin: 0 0 20px 0;">
+                            <div class="amount-label" style="font-size: 14px; color: #0d47a1; font-weight: 600; letter-spacing: 0.5px;">NET PAY</div>
+                            <div class="amount-large" style="font-size: 22px; font-weight: 700; color: #0d47a1; margin: 5px 0 0 0; letter-spacing: 0.5px;">$${netTotalPay.toFixed(2)}</div>
+                        </div>
                         </div>
 
-                        <div class="salary-row">
-                            <div class="salary-label">OT Hours (Payable)</div>
-                            <div class="salary-amount">${payableOtHours.toFixed(2)}</div>
+                        <!-- Year-to-Date Accumulated Section -->
+                        <div style="margin: 30px 0 15px 0; page-break-inside: avoid; padding: 20px; background: #f5f5f5; border-radius: 8px; border: 1px solid #e0e0e0;">
+                            <h3 style="font-size: 14px; font-weight: 600; color: #424242; border-bottom: 1px solid #bdbdbd; padding-bottom: 8px; margin: 0 0 16px 0; font-family: 'Poppins', sans-serif;">Year-to-Date Accumulated (${year})</h3>
+                            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
+                                <div class="salary-box" style="background: #f5f5f5; border: 1px solid #e0e0e0;">
+                                    <div class="amount-large" style="color: #212121;">$${accumulatedSalary ? accumulatedSalary.toFixed(2) : '0.00'}</div>
+                                    <div class="amount-label">Total Accumulated Salary (Gross)</div>
+                                </div>
+                                <div class="salary-box" style="background: #f5f5f5; border: 1px solid #e0e0e0;">
+                                    <div class="amount-large" style="color: #c62828;">$${cpfEmployeeAccumulated ? cpfEmployeeAccumulated.toFixed(2) : '0.00'}</div>
+                                    <div class="amount-label">CPF Employee</div>
+                                </div>
+                                <div class="salary-box" style="background: #f5f5f5; border: 1px solid #e0e0e0;">
+                                    <div class="amount-large" style="color: #2e7d32;">$${employerCPFAccumulated ? employerCPFAccumulated.toFixed(2) : '0.00'}</div>
+                                    <div class="amount-label">CPF Employer</div>
+                                </div>
+                            </div>
+                            <p style="font-size: 10px; color: #757575; margin: 15px 0 0 0; font-style: italic; text-align: center; padding-top: 8px; border-top: 1px dashed #bdbdbd;">
+                                * Accumulated values reset every January. Current values reflect period from January to ${month < 10 ? '0' + month : month}/${year}.
+                            </p>
                         </div>
 
-                        <div class="salary-row">
-                            <div class="salary-label">Sun/PH Pay</div>
-                            <div class="salary-amount">$${sunPhPay.toFixed(2)}</div>
-                        </div>
-
-                        <div class="salary-row">
-                            <div class="salary-label">Sun/PH Days</div>
-                            <div class="salary-amount">${totalSunPhDays.toFixed(2)}</div>
-                        </div>
-
-                            <div class="salary-row">
-                            <div class="salary-label">Monthly Allowance</div>
-                            <div class="salary-amount">$${allowance1.toFixed(2)}</div>
-                        </div>
-
-                        ${excessOtHours > 0 ? `
-                        <div class="salary-row">
-                            <div class="salary-label">Incentive Allowance (Excess OT)</div>
-                            <div class="salary-amount">$${allowance2.toFixed(2)}</div>
-                        </div>
-
-                        <div class="salary-row">
-                            <div class="salary-label">Excess OT Hours</div>
-                            <div class="salary-amount">${excessOtHours.toFixed(2)}</div>
-                        </div>
-                        ` : `
-                            <div class="salary-row">
-                            <div class="salary-label">Incentive Allowance</div>
-                            <div class="salary-amount">$${allowance2.toFixed(2)}</div>
-                        </div>
-                        `}
-
-                        ${workerType === 'local' ? `
-                        <div class="salary-row">
-                            <div class="salary-label">SDL Contribution</div>
-                            <div class="salary-amount">$${sdlContribution.toFixed(2)}</div>
-                        </div>
-                        ` : ''}
-
-                        ${bonusAmount > 0 ? `
-                        <div class="salary-row">
-                            <div class="salary-label">Bonus</div>
-                            <div class="salary-amount">$${bonusAmount.toFixed(2)}</div>
-                        </div>
-                        ` : ''}
-
-                        <div class="salary-row">
-                            <div class="salary-label">Total Additions</div>
-                            <div class="salary-amount">$${totalAdditions.toFixed(2)}</div>
-                        </div>
-
-                        ${workerType === 'local' ? `
-                        <div class="salary-row">
-                            <div class="salary-label">CPF Employee Contribution</div>
-                            <div class="salary-amount">-$${cpfEmployeeDeduction.toFixed(2)}</div>
-                        </div>
-                        <div class="salary-row">
-                            <div class="salary-label">SINDA Contribution</div>
-                            <div class="salary-amount">-$${sindaDeduction.toFixed(2)}</div>
-                        </div>
-                        <div class="salary-row">
-                            <div class="salary-label">CPF Employer Contribution (Not Deducted)</div>
-                            <div class="salary-amount">$${cpfEmployerContribution.toFixed(2)}</div>
-                        </div>
-                        ` : ''}
-
-                        ${deductions.filter(d => d.type && d.amount).map(deduction => `
-                        <div class="salary-row">
-                            <div class="salary-label">Deduction: ${deduction.type}</div>
-                            <div class="salary-amount">-$${parseFloat(deduction.amount).toFixed(2)}</div>
-                        </div>
-                        `).join('')}
-
-                        ${totalDeductions > 0 ? `
-                        <div class="salary-row">
-                            <div class="salary-label">Total Deductions</div>
-                            <div class="salary-amount">-$${totalDeductions.toFixed(2)}</div>
-                        </div>
-                        ` : ''}
-
-                        <div class="salary-row">
-                            <div class="salary-label">Net Total Pay</div>
-                            <div class="salary-amount">$${netTotalPay.toFixed(2)}</div>
-                        </div>
-                    </div>
-
-                    <div class="signature-section">
+                        <div class="signature-section" style="margin-top: 30px; display: flex; justify-content: space-between; padding: 0 20px;">
                         <div>
                             <div class="signature-line"></div>
-                            <p><strong>Employee Signature</strong></p>
+                            <p style="text-align: center; margin: 0; font-size: 12px; color: #5d4037;"><strong>Employee Signature</strong></p>
                         </div>
                         <div>
                             <div class="signature-line"></div>
@@ -2621,6 +3031,9 @@ export default function AdminDashboard() {
 
         const basicDays = totalBasicHours / 8;
         const sunPhDays = totalSunPhHours / 8;
+        
+        // Ensure totalOtHours is defined for the payslip display
+        const displayOtHours = totalOtHours || 0;
 
         // Calculate salary components
         const basicDailyPay = workerDetails.basic_salary_per_day;
@@ -2636,140 +3049,31 @@ export default function AdminDashboard() {
             return sum + (parseFloat(deduction.amount) || 0);
         }, 0);
 
-        const netTotalPay = totalAdditions - totalDeductions;
-
-        const printWindow = window.open('', '', 'height=800,width=1000');
-        printWindow.document.write(`
-            <html>
-                <head>
-                    <title>Payslip - ${workerDetails.employee_name} (${month}/${year})</title>
-                    <style>
-                        body {
-                            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                            padding: 15px;
-                            background: white;
-                            color: #333;
-                            line-height: 1.4;
-                            font-size: 12px;
-                        }
-                        .header {
-                            text-align: center;
-                            margin-bottom: 20px;
-                            border-bottom: 2px solid #333;
-                            padding-bottom: 15px;
-                        }
-                        .company-name {
-                            font-family: 'Calibri', 'Segoe UI', sans-serif;
-                            font-weight: 700;
-                            font-size: 20px;
-                            margin: 0;
-                            color: #b22222;
-                        }
-                        .company-address {
-                            font-family: 'Aptos Narrow', 'Segoe UI', sans-serif;
-                            font-size: 11px;
-                            margin: 6px 0 0 0;
-                            color: #666;
-                        }
-                        .top-section {
-                            display: grid;
-                            grid-template-columns: 1fr 1fr;
-                            gap: 30px;
-                            margin: 20px 0;
-                        }
-                        .employee-details {
-                            background: #f8f9fa;
-                            padding: 15px;
-                            border-radius: 8px;
-                            border: 1px solid #dee2e6;
-                        }
-                        .section-title {
-                            font-weight: 700;
-                            font-size: 14px;
-                            margin-bottom: 12px;
-                            color: #495057;
-                            border-bottom: 1px solid #dee2e6;
-                            padding-bottom: 8px;
-                        }
-                        .detail-row {
-                            margin-bottom: 8px;
-                            font-size: 11px;
-                        }
-                        .detail-label {
-                            font-weight: 600;
-                            color: #495057;
-                        }
-                        .detail-value {
-                            color: #6c757d;
-                        }
-                        .bottom-section {
-                            display: grid;
-                            grid-template-columns: 1fr 1fr;
-                            gap: 30px;
-                            margin: 30px 0;
-                        }
-                        .earnings-section, .deductions-section {
-                            background: #f8f9fa;
-                            padding: 15px;
-                            border-radius: 8px;
-                            border: 1px solid #dee2e6;
-                        }
-                        .earnings-row, .deductions-row {
-                            display: flex;
-                            justify-content: space-between;
-                            padding: 6px 0;
-                            border-bottom: 1px solid #e9ecef;
-                            font-size: 11px;
-                        }
-                        .earnings-row:last-child, .deductions-row:last-child {
-                            border-bottom: none;
-                            font-weight: 700;
-                            font-size: 12px;
-                            color: #495057;
-                        }
-                        .item-label {
-                            font-weight: 500;
-                        }
-                        .item-amount {
-                            text-align: right;
-                            font-weight: 600;
-                        }
-                        .total-section {
-                            text-align: center;
-                            margin: 30px 0;
-                            padding: 20px;
-                            background: #ffffff;
-                            border: 2px solid #495057;
-                            border-radius: 8px;
-                        }
-                        .total-label {
-                            font-size: 16px;
-                            font-weight: 700;
-                            color: #495057;
-                            margin-bottom: 8px;
-                        }
-                        .total-amount {
-                            font-size: 24px;
-                            font-weight: 900;
-                            color: #b22222;
-                        }
-                        .signature-section {
-                            margin-top: 40px;
-                            display: flex;
-                            justify-content: space-between;
-                            text-align: center;
-                        }
-                        .signature-line {
-                            border-bottom: 2px solid #333;
-                            width: 180px;
-                            height: 40px;
-                            margin-top: 25px;
-                        }
-                        .signature-label {
-                            font-weight: 700;
-                            font-size: 12px;
-                            margin-top: 8px;
-                        }
+        // Generate HTML for the payslip with all required variables in scope
+        const payslipHTML = (`
+            <style>
+                .net-pay-amount {
+                    font-size: 24px;
+                    font-weight: 900;
+                    color: #b22222;
+                }
+                .signature-section {
+                    margin-top: 40px;
+                    display: flex;
+                    justify-content: space-between;
+                    text-align: center;
+                }
+                .signature-line {
+                    border-bottom: 2px solid #333;
+                    width: 180px;
+                    height: 40px;
+                    margin-top: 25px;
+                }
+                .signature-label {
+                    font-weight: 700;
+                    font-size: 12px;
+                    margin-top: 8px;
+                }
                         @media print {
                             body {
                                 background: white !important;
@@ -2932,8 +3236,8 @@ export default function AdminDashboard() {
                                 <span class="item-amount">$${sunPhPay.toFixed(2)}</span>
                             </div>
                             <div class="earnings-row">
-                                <span class="item-label">Allowance Total</span>
-                                <span class="item-amount">$${(allowance1 + allowance2).toFixed(2)}</span>
+                                <span class="item-label">Total Allowances</span>
+                                <span class="item-amount">$${(monthlyAllowance + incentiveAllowance).toFixed(2)}</span>
                             </div>
                             <div class="earnings-row">
                                 <span class="item-label">Total Additions</span>
@@ -3230,14 +3534,23 @@ export default function AdminDashboard() {
                                                                     <Button
                                                                         size="sm"
                                                                         variant="outline"
-                                                                        onClick={() => {
+                                                                        onClick={async () => {
+                                                                            // Load breaks for this shift
+                                                                            const { data: breaks } = await supabase
+                                                                                .from('breaks')
+                                                                                .select('*')
+                                                                                .eq('shift_id', shift.id)
+                                                                                .order('break_start', { ascending: true });
+
                                                                             setEditingShift(shift);
                                                                             setShiftEditData({
-                                                                                entry_time: shift.entry_time || '',
-                                                                                leave_time: shift.leave_time || '',
-                                                                                lunch_start: shift.lunch_start || '',
-                                                                                lunch_end: shift.lunch_end || '',
-                                                                                leave_type: shift.leave_type || ''
+                                                                                entry_time: toDateTimeLocalUtc(shift.entry_time),
+                                                                                leave_time: toDateTimeLocalUtc(shift.leave_time),
+                                                                                breaks: breaks && breaks.length > 0 ? breaks.map(b => ({
+                                                                                    break_start: toDateTimeLocalUtc(b.break_start),
+                                                                                    break_end: toDateTimeLocalUtc(b.break_end)
+                                                                                })) : [{ break_start: '', break_end: '' }],
+                                                                                leave_type: shift.leave_type || '__none__'
                                                                             });
                                                                             setShowEditShiftDialog(true);
                                                                         }}
@@ -3315,14 +3628,16 @@ export default function AdminDashboard() {
                                                                             const recalc = calculateShiftHours(
                                                                                 shift.entry_time,
                                                                                 shift.leave_time,
-                                                                                shift.lunch_start,
-                                                                                shift.work_date,
-                                                                                shift.lunch_end
+                                                                                shift.breaks || [],
+                                                                                shift.work_date
                                                                             );
                                                                             return (
                                                                                 <div className="flex items-center gap-4 text-sm">
                                                                                     <span className="text-green-600 font-medium">
                                                                                         Basic: {recalc.basicHours.toFixed(2)}h
+                                                                                    </span>
+                                                                                    <span className="text-slate-600 font-medium">
+                                                                                        Break: {recalc.breakHours.toFixed(2)}h
                                                                                     </span>
                                                                                     {recalc.sundayHours > 0 && (
                                                                                         <span className="text-orange-600 font-medium">
@@ -3349,19 +3664,14 @@ export default function AdminDashboard() {
                                                                             <h4 className="font-medium text-slate-700 mb-2">Time Details</h4>
                                                                             <div className="space-y-1">
                                                                                 <p>Entry: {shift.entry_time ? formatTime(shift.entry_time) : 'Not recorded'}</p>
-                                                                                {shift.lunch_start && (
-                                                                                    <p className="flex items-center gap-1">
+                                                                                {shift.breaks && shift.breaks.length > 0 && shift.breaks.map((breakItem, index) => (
+                                                                                    <p key={breakItem.id || `${shift.id}-break-${index}`} className="flex items-center gap-1">
                                                                                         <Coffee className="w-3 h-3" />
-                                                                                        Lunch Start: {formatTime(shift.lunch_start)}
+                                                                                        Break {index + 1}: {formatTime(breakItem.break_start)}
+                                                                                        {breakItem.break_end ? ` - ${formatTime(breakItem.break_end)}` : ' (Ongoing)'}
                                                                                     </p>
-                                                                                )}
-                                                                                {shift.lunch_end && (
-                                                                                    <p className="flex items-center gap-1">
-                                                                                        <Coffee className="w-3 h-3" />
-                                                                                        Lunch End: {formatTime(shift.lunch_end)}
-                                                                                    </p>
-                                                                                )}
-                                                                                <p>Leave: {shift.leave_time ? formatTime(shift.leave_time) : 'Not recorded'}</p>
+                                                                                ))}
+                                                                                <p>Exit: {shift.leave_time ? formatTime(shift.leave_time) : 'Not recorded'}</p>
                                                                             </div>
                                                                         </div>
                                                                         {shift.has_left && (() => {
@@ -3369,9 +3679,8 @@ export default function AdminDashboard() {
                                                                             const recalc = calculateShiftHours(
                                                                                 shift.entry_time,
                                                                                 shift.leave_time,
-                                                                                shift.lunch_start,
-                                                                                shift.work_date,
-                                                                                shift.lunch_end
+                                                                                shift.breaks || [],
+                                                                                shift.work_date
                                                                             );
                                                                             return (
                                                                                 <div>
@@ -3380,6 +3689,7 @@ export default function AdminDashboard() {
                                                                                         <p>Basic Hours: {recalc.basicHours.toFixed(2)}</p>
                                                                                         <p>Sun/PH Hours: {recalc.sundayHours.toFixed(2)}</p>
                                                                                         <p>OT Hours: {recalc.otHours.toFixed(2)}</p>
+                                                                                        <p>Break Hours: {recalc.breakHours.toFixed(2)}</p>
                                                                                         <p>Total Hours: {(recalc.basicHours + recalc.sundayHours + recalc.otHours).toFixed(2)}</p>
                                                                                     </div>
                                                                                 </div>
@@ -4276,16 +4586,58 @@ export default function AdminDashboard() {
                 </DialogContent>
             </Dialog>
 
+            {/* Worker Type Selection Dialog for Edit */}
+            <Dialog open={showEditWorkerTypeDialog} onOpenChange={setShowEditWorkerTypeDialog}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Select Worker Type</DialogTitle>
+                        <DialogDescription>
+                            Please select the type of worker you want to edit.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="flex flex-col space-y-4 py-4">
+                        <Button 
+                            onClick={() => handleEditWorkerTypeSelect('foreign')}
+                            className="justify-start px-6 py-8 text-lg"
+                            variant="outline"
+                        >
+                            <div className="text-left">
+                                <div className="font-semibold">Foreign Worker</div>
+                                <div className="text-sm text-gray-500 mt-1">Edit a foreign worker's details</div>
+                            </div>
+                        </Button>
+                        <Button 
+                            onClick={() => handleEditWorkerTypeSelect('local')}
+                            className="justify-start px-6 py-8 text-lg"
+                            variant="outline"
+                        >
+                            <div className="text-left">
+                                <div className="font-semibold">Local Worker</div>
+                                <div className="text-sm text-gray-500 mt-1">Edit a local worker's details including CPF and SINDA</div>
+                            </div>
+                        </Button>
+                    </div>
+                    <DialogFooter>
+                        <Button 
+                            variant="outline" 
+                            onClick={() => setShowEditWorkerTypeDialog(false)}
+                        >
+                            Cancel
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
             {/* Edit Worker Dialog */}
             <Dialog open={showEditWorkerDialog} onOpenChange={setShowEditWorkerDialog}>
-                <DialogContent className="max-w-2xl">
+                <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle>Edit Worker</DialogTitle>
+                        <DialogTitle>Edit {selectedWorkerType === 'local' ? 'Local' : 'Foreign'} Worker</DialogTitle>
                         <DialogDescription>
                             Update the worker's information and salary details.
                         </DialogDescription>
                     </DialogHeader>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pr-2">
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Employee ID</label>
                             <Input
@@ -4355,7 +4707,7 @@ export default function AdminDashboard() {
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Basic Salary per Day ($)</label>
+                            <label className="text-sm font-medium">Basic Salary per Month ($)</label>
                             <Input
                                 type="number"
                                 step="0.01"
@@ -4365,14 +4717,48 @@ export default function AdminDashboard() {
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Basic Allowance 1 per Month ($)</label>
+                            <label className="text-sm font-medium">Monthly Allowance ($)</label>
                             <Input
                                 type="number"
                                 step="0.01"
-                                placeholder="150.00"
+                                placeholder="0.00"
                                 value={workerFormData.basic_allowance_1}
                                 onChange={(e) => setWorkerFormData({ ...workerFormData, basic_allowance_1: e.target.value })}
                             />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Incentive Allowance ($)</label>
+                            <Input
+                                type="number"
+                                step="0.01"
+                                placeholder="0.00"
+                                value={workerFormData.incentive_allowance || ''}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, incentive_allowance: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Password</label>
+                            <div className="relative">
+                                <Input
+                                    type={showPassword ? 'text' : 'password'}
+                                    placeholder="Password"
+                                    value={workerFormData.password || ''}
+                                    onChange={(e) => setWorkerFormData({ ...workerFormData, password: e.target.value })}
+                                />
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="absolute right-1 top-1/2 -translate-y-1/2 h-8 w-8 p-0"
+                                    onClick={() => setShowPassword(!showPassword)}
+                                >
+                                    {showPassword ? (
+                                        <EyeOff className="h-4 w-4" />
+                                    ) : (
+                                        <Eye className="h-4 w-4" />
+                                    )}
+                                </Button>
+                            </div>
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Annual Leave Limit (Days)</label>
@@ -4410,6 +4796,82 @@ export default function AdminDashboard() {
                                 onChange={(e) => setWorkerFormData({ ...workerFormData, medical_leave_balance: e.target.value })}
                             />
                         </div>
+
+                        {/* Local Worker Specific Fields */}
+                        {selectedWorkerType === 'local' && (
+                            <>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Date of Birth</label>
+                                    <Input
+                                        type="date"
+                                        value={workerFormData.birthday || ''}
+                                        onChange={(e) => {
+                                            const newFormData = { ...workerFormData, birthday: e.target.value };
+                                            // Recalculate CPF and SINDA when birthday changes
+                                            if (e.target.value && workerFormData.employer_salary) {
+                                                const age = calculateAge(e.target.value);
+                                                newFormData.cpf_employee_contribution = getCPFEmployeeRate(age);
+                                                newFormData.cpf_employer_contribution = getCPFEmployerRate(age);
+                                                newFormData.sinda_contribution = calculateSINDA(parseFloat(workerFormData.employer_salary) || 0);
+                                                setCalculatedCPFEmployee(newFormData.cpf_employee_contribution);
+                                                setCalculatedCPFEmployer(newFormData.cpf_employer_contribution);
+                                                setCalculatedSINDA(newFormData.sinda_contribution);
+                                            }
+                                            setWorkerFormData(newFormData);
+                                        }}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">Employer's Salary ($)</label>
+                                    <Input
+                                        type="number"
+                                        step="0.01"
+                                        placeholder="0.00"
+                                        value={workerFormData.employer_salary || ''}
+                                        onChange={(e) => {
+                                            const salary = parseFloat(e.target.value) || 0;
+                                            const newFormData = { ...workerFormData, employer_salary: e.target.value };
+                                            // Recalculate SINDA when salary changes
+                                            if (workerFormData.birthday) {
+                                                newFormData.sinda_contribution = calculateSINDA(salary);
+                                                setCalculatedSINDA(newFormData.sinda_contribution);
+                                            }
+                                            setWorkerFormData(newFormData);
+                                        }}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">CPF Employee Contribution (%)</label>
+                                    <Input
+                                        type="number"
+                                        step="0.01"
+                                        placeholder="0.00"
+                                        value={calculatedCPFEmployee}
+                                        readOnly
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">CPF Employer Contribution (%)</label>
+                                    <Input
+                                        type="number"
+                                        step="0.01"
+                                        placeholder="0.00"
+                                        value={calculatedCPFEmployer}
+                                        readOnly
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium">SINDA Contribution ($)</label>
+                                    <Input
+                                        type="number"
+                                        step="0.01"
+                                        placeholder="0.00"
+                                        value={calculatedSINDA}
+                                        readOnly
+                                    />
+                                </div>
+                            </>
+                        )}
                     </div>
                     <DialogFooter>
                         <Button
@@ -4768,7 +5230,7 @@ export default function AdminDashboard() {
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">Leave Time</label>
+                                        <label className="text-sm font-medium">Exit Time</label>
                                         <Input
                                             type="datetime-local"
                                             value={shiftEditData.leave_time}
@@ -4776,24 +5238,87 @@ export default function AdminDashboard() {
                                         />
                                     </div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-2">
-                                        <label className="text-sm font-medium">Lunch Start</label>
-                                        <Input
-                                            type="datetime-local"
-                                            value={shiftEditData.lunch_start}
-                                            onChange={(e) => setShiftEditData({ ...shiftEditData, lunch_start: e.target.value })}
-                                        />
+
+                                {/* Breaks Section */}
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <label className="text-sm font-medium">Breaks</label>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => {
+                                                const newBreaks = [...shiftEditData.breaks, { break_start: '', break_end: '' }];
+                                                setShiftEditData({ ...shiftEditData, breaks: newBreaks });
+                                            }}
+                                            className="text-xs"
+                                        >
+                                            + Add Break
+                                        </Button>
                                     </div>
-                                    <div className="space-y-2">
-                                        <label className="text-sm font-medium">Lunch End</label>
-                                        <Input
-                                            type="datetime-local"
-                                            value={shiftEditData.lunch_end}
-                                            onChange={(e) => setShiftEditData({ ...shiftEditData, lunch_end: e.target.value })}
-                                        />
+                                    {shiftEditData.breaks.map((breakItem, index) => (
+                                        <div key={index} className="border border-slate-200 rounded-lg p-3 space-y-2">
+                                            <div className="flex items-center justify-between">
+                                                <h4 className="text-sm font-medium">Break {index + 1}</h4>
+                                                {shiftEditData.breaks.length > 1 && (
+                                                    <Button
+                                                        type="button"
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        onClick={() => {
+                                                            const newBreaks = shiftEditData.breaks.filter((_, i) => i !== index);
+                                                            setShiftEditData({ ...shiftEditData, breaks: newBreaks });
+                                                        }}
+                                                        className="text-red-600 hover:text-red-700 h-6 w-6 p-0"
+                                                    >
+                                                        ×
+                                                    </Button>
+                                                )}
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <div className="space-y-1">
+                                                    <label className="text-xs text-slate-600">Start Time</label>
+                                                    <Input
+                                                        type="datetime-local"
+                                                        value={breakItem.break_start}
+                                                        onChange={(e) => {
+                                                            const newBreaks = [...shiftEditData.breaks];
+                                                            newBreaks[index].break_start = e.target.value;
+                                                            setShiftEditData({ ...shiftEditData, breaks: newBreaks });
+                                                        }}
+                                                        className="text-xs"
+                                                    />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-xs text-slate-600">End Time</label>
+                                                    <Input
+                                                        type="datetime-local"
+                                                        value={breakItem.break_end}
+                                                        onChange={(e) => {
+                                                            const newBreaks = [...shiftEditData.breaks];
+                                                            newBreaks[index].break_end = e.target.value;
+                                                            setShiftEditData({ ...shiftEditData, breaks: newBreaks });
+                                                        }}
+                                                        className="text-xs"
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                    <div className="text-right text-xs text-slate-600">
+                                        Total Break Hours: {(
+                                            (shiftEditData.breaks || []).reduce((sum, b) => {
+                                                const startIso = fromDateTimeLocalUtc(b.break_start);
+                                                const endIso = fromDateTimeLocalUtc(b.break_end);
+                                                if (!startIso || !endIso) return sum;
+                                                const diffMs = new Date(endIso) - new Date(startIso);
+                                                if (!Number.isFinite(diffMs) || diffMs <= 0) return sum;
+                                                return sum + diffMs / (1000 * 60 * 60);
+                                            }, 0)
+                                        ).toFixed(2)}h
                                     </div>
                                 </div>
+
                                 <div className="space-y-2">
                                     <label className="text-sm font-medium">Leave Type (Optional)</label>
                                     <Select
@@ -4803,8 +5328,8 @@ export default function AdminDashboard() {
                                         <SelectTrigger>
                                             <SelectValue placeholder="Select leave type" />
                                         </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="none">No Leave</SelectItem>
+                                    <SelectContent>
+                                            <SelectItem value="__none__">No Leave</SelectItem>
                                             <SelectItem value="Annual Leave">Annual Leave</SelectItem>
                                             <SelectItem value="Maternity Leave">Maternity Leave</SelectItem>
                                             <SelectItem value="Paternity Leave">Paternity Leave</SelectItem>
@@ -4833,48 +5358,80 @@ export default function AdminDashboard() {
                                     Cancel
                                 </Button>
                                 <Button
-                                    onClick={() => {
-                                        if (editingShift && shiftEditData.entry_time && shiftEditData.leave_time) {
-                                            // Recalculate hours
-                                            const calculations = calculateShiftHours(
-                                                shiftEditData.entry_time,
-                                                shiftEditData.leave_time,
-                                                [
-                                                    shiftEditData.lunch_start && shiftEditData.lunch_end ? {
-                                                        break_start: shiftEditData.lunch_start,
-                                                        break_end: shiftEditData.lunch_end
-                                                    } : null
-                                                ].filter(Boolean),
-                                                editingShift.work_date
-                                            );
+                                    onClick={async () => {
+                                        if (!editingShift) return;
 
-                                            // Update shift
-                                            const { error } = supabase
-                                                .from('shifts')
-                                                .update({
-                                                    entry_time: shiftEditData.entry_time || null,
-                                                    leave_time: shiftEditData.leave_time || null,
-                                                    lunch_start: shiftEditData.lunch_start || null,
-                                                    lunch_end: shiftEditData.lunch_end || null,
-                                                    leave_type: shiftEditData.leave_type || null,
-                                                    worked_hours: calculations.basicHours,
-                                                    sunday_hours: calculations.sundayHours,
-                                                    ot_hours: calculations.otHours,
-                                                    has_left: true
-                                                })
-                                                .eq('id', editingShift.id);
+                                        const entryTimeIso = fromDateTimeLocalUtc(shiftEditData.entry_time);
+                                        const leaveTimeIso = fromDateTimeLocalUtc(shiftEditData.leave_time);
 
-                                            if (error) {
-                                                toast.error('Failed to update shift');
-                                                console.error(error);
-                                            } else {
-                                                toast.success('Shift updated successfully');
-                                                setShowEditShiftDialog(false);
-                                                queryClient.invalidateQueries({ queryKey: ['shifts'] });
-                                            }
-                                        } else {
-                                            toast.error('Entry time and leave time are required');
+                                        if (!entryTimeIso) {
+                                            toast.error('Entry time is required');
+                                            return;
                                         }
+
+                                        const normalizedBreaks = (shiftEditData.breaks || [])
+                                            .map((b) => ({
+                                                break_start: fromDateTimeLocalUtc(b.break_start),
+                                                break_end: fromDateTimeLocalUtc(b.break_end)
+                                            }))
+                                            .filter((b) => b.break_start);
+
+                                        const isCompleted = !!leaveTimeIso;
+                                        const calculations = isCompleted
+                                            ? calculateShiftHours(entryTimeIso, leaveTimeIso, normalizedBreaks, editingShift.work_date)
+                                            : { basicHours: 0, sundayHours: 0, otHours: 0 };
+
+                                        const { error: shiftError } = await supabase
+                                            .from('shifts')
+                                            .update({
+                                                entry_time: entryTimeIso,
+                                                leave_time: leaveTimeIso,
+                                                leave_type: shiftEditData.leave_type === '__none__' ? null : shiftEditData.leave_type,
+                                                worked_hours: calculations.basicHours,
+                                                sunday_hours: calculations.sundayHours,
+                                                ot_hours: calculations.otHours,
+                                                has_left: isCompleted
+                                            })
+                                            .eq('id', editingShift.id);
+
+                                        if (shiftError) {
+                                            toast.error('Failed to update shift');
+                                            console.error(shiftError);
+                                            return;
+                                        }
+
+                                        const { error: deleteBreaksError } = await supabase
+                                            .from('breaks')
+                                            .delete()
+                                            .eq('shift_id', editingShift.id);
+
+                                        if (deleteBreaksError) {
+                                            toast.error('Failed to update breaks');
+                                            console.error(deleteBreaksError);
+                                            return;
+                                        }
+
+                                        if (normalizedBreaks.length > 0) {
+                                            const { error: insertBreaksError } = await supabase
+                                                .from('breaks')
+                                                .insert(
+                                                    normalizedBreaks.map((b) => ({
+                                                        shift_id: editingShift.id,
+                                                        break_start: b.break_start,
+                                                        break_end: b.break_end
+                                                    }))
+                                                );
+
+                                            if (insertBreaksError) {
+                                                toast.error('Failed to update breaks');
+                                                console.error(insertBreaksError);
+                                                return;
+                                            }
+                                        }
+
+                                        toast.success('Shift updated successfully');
+                                        setShowEditShiftDialog(false);
+                                        queryClient.invalidateQueries({ queryKey: ['shifts'] });
                                     }}
                                     className="bg-blue-600 hover:bg-blue-700"
                                 >

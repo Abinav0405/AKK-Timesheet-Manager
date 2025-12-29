@@ -42,9 +42,10 @@ const QRScanner = ({
                     };
                     setCurrentLocation(newLocation);
 
-                    // Log location accuracy for industrial monitoring
-                    if (position.coords.accuracy > 50) {
-                        console.warn(`Location accuracy: ${Math.round(position.coords.accuracy)}m (should be <50m for optimal EVT)`);
+                    // Log location accuracy (only warn for very poor accuracy)
+                    if (position.coords.accuracy > 100) {
+                        console.warn(`Location accuracy: ${Math.round(position.coords.accuracy)}m (should be <100m for better accuracy)`);
+                        toast.warning("Location accuracy is low. Please ensure you're at the correct site.");
                     }
                 },
                 (error) => {
@@ -96,8 +97,9 @@ const QRScanner = ({
                     },
                     (error) => {
                         console.error('Location error:', error);
-                        setLocationPermission(false);
-                        toast.error("Location permission denied");
+                        // Don't block scanning if location permission is denied
+                        setLocationPermission(true);
+                        toast.warning("Location permission not granted. Some features may be limited.");
                     }
                 );
             }
@@ -147,7 +149,11 @@ const QRScanner = ({
     const onScanSuccessInternal = async (decodedText, decodedResult) => {
         if (scannedData) return; // Prevent multiple scans
 
-        setScannedData(decodedText);
+        // Clean up the QR code data
+        const qrToken = decodedText.trim();
+        console.log('QR Code scanned, token:', qrToken);
+
+        setScannedData(qrToken);
         setScanning(false);
 
         if (scannerInstanceRef.current) {
@@ -157,30 +163,40 @@ const QRScanner = ({
         setIsValidating(true);
 
         try {
-            // Validate QR token and location
-            const qrToken = decodedText;
+            if (!qrToken) {
+                throw new Error("Invalid QR code: Empty code");
+            }
 
-            // Fetch site information
+            // Fetch site information with better error handling
+            console.log('Looking up site with token:', qrToken);
             const { data: site, error: siteError } = await supabase
                 .from('sites')
                 .select('*')
                 .eq('qr_token', qrToken)
                 .single();
 
-            if (siteError || !site) {
-                toast.error("Invalid QR code");
-                setIsValidating(false);
-                return;
+            if (siteError) {
+                console.error('Site lookup error:', siteError);
+                throw new Error("Failed to verify site. Please try again.");
             }
+
+            if (!site) {
+                console.error('Site not found for token:', qrToken);
+                throw new Error("Invalid site QR code. Please contact your supervisor.");
+            }
+
+            console.log('Found site:', site);
 
             setSiteInfo(site);
 
             // For clock out and lunch, validate that we're at the same site as entry
-            if ((action === 'leave' || action === 'lunch') && currentShiftSiteId && currentShiftSiteId !== site.id) {
-                toast.error(`Must ${action} at the same site`);
-                onScanError && onScanError("Site validation failed");
-                setIsValidating(false);
-                return;
+            if ((action === 'leave' || action === 'breaks') && currentShiftSiteId) {
+                console.log('Validating site match:', { currentShiftSiteId, scannedSiteId: site.id });
+                if (currentShiftSiteId !== site.id) {
+                    const errorMsg = `You must ${action} at the same site where you clocked in`;
+                    console.error(errorMsg);
+                    throw new Error(errorMsg);
+                }
             }
 
             // Real-time location validation for industrial EVT use

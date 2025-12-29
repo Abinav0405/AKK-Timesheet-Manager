@@ -175,7 +175,12 @@ export function calculateDistance(lat1, lon1, lat2, lon2) {
 export function formatTime(dateTime) {
     if (!dateTime) return '';
     const date = new Date(dateTime);
-    return date.getUTCHours().toString().padStart(2, '0') + ':' + date.getUTCMinutes().toString().padStart(2, '0');
+    return new Intl.DateTimeFormat('en-SG', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: 'Asia/Singapore'
+    }).format(date);
 }
 
 /**
@@ -187,7 +192,8 @@ export function formatDate(date) {
     return d.toLocaleDateString('en-SG', {
         day: '2-digit',
         month: '2-digit',
-        year: 'numeric'
+        year: 'numeric',
+        timeZone: 'Asia/Singapore'
     });
 }
 

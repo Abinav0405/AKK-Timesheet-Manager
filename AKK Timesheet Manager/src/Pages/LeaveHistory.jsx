@@ -16,6 +16,7 @@ import { format } from "date-fns";
 export default function LeaveHistory() {
     const workerId = sessionStorage.getItem('workerId');
     const workerName = sessionStorage.getItem('workerName');
+    const workerType = sessionStorage.getItem('workerType') || 'foreign'; // Default to foreign worker for backward compatibility
 
     // Fetch worker's leave history
     const { data: leaveHistory = [], isLoading: isLoadingLeaveHistory } = useQuery({
@@ -37,24 +38,29 @@ export default function LeaveHistory() {
 
     // Fetch worker's leave balances
     const { data: workerData, isLoading: isLoadingWorkerData } = useQuery({
-        queryKey: ['workerData', workerId],
+        queryKey: ['workerData', workerId, workerType],
         queryFn: async () => {
             if (!workerId) return null;
 
-            console.log('🔍 LEAVEHISTORY: Fetching worker balance data for ID:', workerId);
+            console.log(`🔍 LEAVEHISTORY: Fetching ${workerType} worker balance data for ID:`, workerId);
+            
+            // Use the correct table and ID field based on worker type
+            const tableName = workerType === 'local' ? 'local_worker_details' : 'worker_details';
+            const idField = workerType === 'local' ? 'employee_id' : 'id';
+            
             const { data, error } = await supabase
-                .from('worker_details')
+                .from(tableName)
                 .select('annual_leave_balance, medical_leave_balance')
-                .eq('employee_id', workerId)
+                .eq(idField, workerId)
                 .single();
 
             if (error) {
-                console.error('❌ LEAVEHISTORY: Error fetching worker balance:', error);
+                console.error(`❌ LEAVEHISTORY: Error fetching ${workerType} worker balance:`, error);
                 throw error;
             }
 
-            console.log('✅ LEAVEHISTORY: Worker balance data from database:', data);
-            return data;
+            console.log(`✅ LEAVEHISTORY: ${workerType} worker balance data:`, data);
+            return data || { annual_leave_balance: 0, medical_leave_balance: 0 };
         },
         enabled: !!workerId
     });
