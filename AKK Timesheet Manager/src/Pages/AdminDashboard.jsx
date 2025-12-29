@@ -105,8 +105,13 @@ export default function AdminDashboard() {
     };
 
     const generateQrToken = () => {
-        if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
-        return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+        let core;
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+            core = crypto.randomUUID().split('-')[0].toUpperCase();
+        } else {
+            core = Math.random().toString(36).slice(2, 8).toUpperCase();
+        }
+        return `SITE_${core}_TOKEN`;
     };
 
     useEffect(() => {
@@ -145,6 +150,13 @@ export default function AdminDashboard() {
         return d.toISOString();
     };
 
+    const formatAmount = (value) => {
+        if (value === null || value === undefined || value === '') return '0.00';
+        const num = typeof value === 'number' ? value : Number(value);
+        if (!Number.isFinite(num)) return '0.00';
+        return num.toFixed(2);
+    };
+
     // Leave editing states
     const [showEditLeaveDialog, setShowEditLeaveDialog] = useState(false);
     const [editingLeave, setEditingLeave] = useState(null);
@@ -176,15 +188,13 @@ export default function AdminDashboard() {
         ot_rate_per_hour: '',
         sun_ph_rate_per_day: '',
         basic_salary_per_day: '',
-        basic_allowance_1: '150',
+        monthly_allowance: '150',
         password: '',
         annual_leave_limit: '10',
         medical_leave_limit: '14',
         annual_leave_balance: '10',
         medical_leave_balance: '14',
-        // Local worker specific fields
         birthday: '',
-        // Additional fields that might be in either table
         name: '',
         password_hash: ''
     });
@@ -267,7 +277,7 @@ export default function AdminDashboard() {
                 const basicPay = parseFloat(workerDetails.basic_salary_per_day || 0) * totalBasicDays;
                 const otPay = parseFloat(workerDetails.ot_rate_per_hour || 0) * totalOtHours;
                 const sunPhPay = parseFloat(workerDetails.sun_ph_rate_per_day || 0) * totalSunPhDays;
-                const monthlyAllowance = parseFloat(workerDetails.basic_allowance_1 || 0);
+                const monthlyAllowance = parseFloat(workerDetails.monthly_allowance || 0);
                 const incentiveAllowance = parseFloat(workerDetails.incentive_allowance || 0);
                 
                 totalSalary = basicPay + otPay + sunPhPay + monthlyAllowance + incentiveAllowance;
@@ -1067,8 +1077,8 @@ export default function AdminDashboard() {
                 const otPay = payableOtHours * worker.ot_rate_per_hour;
                 const allowance2 = excessOtHours * worker.ot_rate_per_hour; // Excess OT paid as Allowance 2
 
-                const sunPhPay = sunPhDays * worker.sun_ph_rate_per_day; // Sun/PH at individual rate from database
-                const allowance1 = (worker.basic_allowance_1 || 150) * (basicDays / workingDays);
+                const sunPhPay = sunPhDays * worker.sun_ph_rate_per_day;
+                const allowance1 = (worker.monthly_allowance || 150) * (basicDays / workingDays);
                 const netSalary = basicPay + otPay + sunPhPay + allowance1 + allowance2;
 
                 // ROUNDING: Only round final currency values to 2 decimals
@@ -1294,6 +1304,32 @@ export default function AdminDashboard() {
         enabled: !!adminEmail
     });
 
+    const { data: localWorkers = [], isLoading: isLoadingLocalWorkers } = useQuery({
+        queryKey: ['local-workers'],
+        queryFn: async () => {
+            const { data, error } = await supabase
+                .from('local_worker_details')
+                .select('*')
+                .order('employee_id', { ascending: true });
+            if (error) throw error;
+            return data || [];
+        },
+        enabled: !!adminEmail
+    });
+
+    const { data: foreignWorkers = [], isLoading: isLoadingForeignWorkers } = useQuery({
+        queryKey: ['foreign-workers'],
+        queryFn: async () => {
+            const { data, error } = await supabase
+                .from('worker_details')
+                .select('*')
+                .order('employee_id', { ascending: true });
+            if (error) throw error;
+            return data || [];
+        },
+        enabled: !!adminEmail
+    });
+
     const prevShiftsRef = useRef([]);
 
     useEffect(() => {
@@ -1492,7 +1528,7 @@ export default function AdminDashboard() {
                 ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
                 sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
                 basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
-                basic_allowance_1: parseFloat(workerData.basic_allowance_1) || 150,
+                monthly_allowance: parseFloat(workerData.monthly_allowance) || 150,
                 password_hash: workerData.password,
                 annual_leave_balance: parseInt(workerData.annual_leave_balance) || 10,
                 medical_leave_balance: parseInt(workerData.medical_leave_balance) || 14,
@@ -1517,7 +1553,7 @@ export default function AdminDashboard() {
                 const cpfEmployerRate = getCPFEmployerRate(age);
                 const estimatedMonthlyWages =
                     (parseFloat(workerData.basic_salary_per_day) || 0) +
-                    (parseFloat(workerData.basic_allowance_1) || 0) +
+                    (parseFloat(workerData.monthly_allowance) || 0) +
                     (parseFloat(workerData.incentive_allowance) || 0);
                 const sindaAmount = calculateSINDA(estimatedMonthlyWages);
 
@@ -1590,7 +1626,7 @@ export default function AdminDashboard() {
                 ot_rate_per_hour: parseFloat(workerData.ot_rate_per_hour),
                 sun_ph_rate_per_day: parseFloat(workerData.sun_ph_rate_per_day),
                 basic_salary_per_day: parseFloat(workerData.basic_salary_per_day),
-                basic_allowance_1: parseFloat(workerData.basic_allowance_1),
+                monthly_allowance: parseFloat(workerData.monthly_allowance),
                 annual_leave_limit: parseInt(workerData.annual_leave_limit),
                 medical_leave_limit: parseInt(workerData.medical_leave_limit),
                 annual_leave_balance: parseInt(workerData.annual_leave_balance),
@@ -1604,7 +1640,7 @@ export default function AdminDashboard() {
                 const cpfEmployerRate = getCPFEmployerRate(age);
                 const estimatedMonthlyWages =
                     (parseFloat(workerData.basic_salary_per_day) || 0) +
-                    (parseFloat(workerData.basic_allowance_1) || 0) +
+                    (parseFloat(workerData.monthly_allowance) || 0) +
                     (parseFloat(workerData.incentive_allowance) || 0);
                 const sindaAmount = calculateSINDA(estimatedMonthlyWages);
 
@@ -1718,7 +1754,7 @@ export default function AdminDashboard() {
             ot_rate_per_hour: '',
             sun_ph_rate_per_day: '',
             basic_salary_per_day: '',
-            basic_allowance_1: '150',
+            monthly_allowance: '150',
             password: '',
             annual_leave_limit: '10',
             medical_leave_limit: '14',
@@ -1777,15 +1813,13 @@ export default function AdminDashboard() {
                 ot_rate_per_hour: workerData.ot_rate_per_hour || '',
                 sun_ph_rate_per_day: workerData.sun_ph_rate_per_day || '',
                 basic_salary_per_day: workerData.basic_salary_per_day || '',
-                basic_allowance_1: workerData.basic_allowance_1 || '150',
+                monthly_allowance: workerData.monthly_allowance || '150',
                 password: workerData.password || workerData.password_hash || '',
                 annual_leave_limit: workerData.annual_leave_limit || '10',
                 medical_leave_limit: workerData.medical_leave_limit || '14',
                 annual_leave_balance: workerData.annual_leave_balance || '10',
                 medical_leave_balance: workerData.medical_leave_balance || '14',
-                // Local worker specific fields
                 birthday: workerData.birthday || '',
-                // Additional fields that might be in either table
                 name: workerData.name || workerData.employee_name || '',
                 password_hash: workerData.password_hash || workerData.password || ''
             };
@@ -1913,7 +1947,7 @@ export default function AdminDashboard() {
         // Ensure numeric fields are properly formatted
         const numericFields = [
             'ot_rate_per_hour', 'sun_ph_rate_per_day', 'basic_salary_per_day',
-            'basic_allowance_1', 'annual_leave_limit', 'medical_leave_limit',
+            'monthly_allowance', 'annual_leave_limit', 'medical_leave_limit',
             'annual_leave_balance', 'medical_leave_balance'
         ];
         
@@ -2244,10 +2278,10 @@ export default function AdminDashboard() {
         // Calculate Incentive Allowance (excess OT)
         const incentiveAllowance = excessOtHours * workerDetails.ot_rate_per_hour;
 
-        const sunPhPay = totalSunPhDays * workerDetails.sun_ph_rate_per_day; // Sun/PH at individual rate from database
+        const sunPhPay = totalSunPhDays * workerDetails.sun_ph_rate_per_day;
         
-        // Calculate Monthly Allowance (from worker details, no fallback to 150)
-        const monthlyAllowance = workerDetails.basic_allowance_1 * (totalBasicDays / workingDaysData.working_days);
+        const baseMonthlyAllowance = (parseFloat(workerDetails.monthly_allowance ?? 0) || 0);
+        const monthlyAllowance = baseMonthlyAllowance * (totalBasicDays / workingDaysData.working_days);
         
         const bonusAmount = parseFloat(printBonus) || 0;
 
@@ -3229,7 +3263,8 @@ export default function AdminDashboard() {
         const basicPay = basicDailyPay * basicDays;
         const otPay = totalOtHours * workerDetails.ot_rate_per_hour;
         const sunPhPay = sunPhDays * workerDetails.sun_ph_rate_per_day;
-        const allowance1 = workerDetails.basic_allowance_1 ? workerDetails.basic_allowance_1 * (basicDays / workingDays) : 0;
+        const baseMonthlyAllowanceForDisplay = (parseFloat(workerDetails.monthly_allowance ?? 0) || 0);
+        const allowance1 = baseMonthlyAllowanceForDisplay * (basicDays / workingDays);
         const allowance2 = 0; // Not specified, set to 0 for now
         const totalAdditions = basicPay + otPay + sunPhPay + allowance1 + allowance2;
 
@@ -3380,7 +3415,7 @@ export default function AdminDashboard() {
                             </div>
                             <div class="detail-row">
                                 <span class="detail-label">Allowance 1:</span>
-                                <span class="detail-value">$${workerDetails.basic_allowance_1.toFixed(2)}</span>
+                                <span class="detail-value">$${baseMonthlyAllowanceForDisplay.toFixed(2)}</span>
                             </div>
                         </div>
 
@@ -4172,7 +4207,6 @@ export default function AdminDashboard() {
                                 </CardContent>
                             </Card>
 
-                            {/* Delete Worker Card */}
                             <Card className="border-0 shadow-lg hover:shadow-xl transition-shadow">
                                 <CardContent className="p-6 text-center">
                                     <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -4183,6 +4217,135 @@ export default function AdminDashboard() {
                                     <Button variant="destructive" className="w-full" onClick={handleDeleteWorkerClick}>
                                         Delete Worker
                                     </Button>
+                                </CardContent>
+                            </Card>
+                        </div>
+                        <div className="mt-8 space-y-8">
+                            <Card className="border-0 shadow-lg">
+                                <CardContent className="p-6">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <div>
+                                            <h3 className="text-lg font-semibold text-slate-700">Local Workers (local_worker_details)</h3>
+                                            <p className="text-sm text-slate-500">All local workers with CPF and SINDA details</p>
+                                        </div>
+                                    </div>
+                                    {isLoadingLocalWorkers ? (
+                                        <div className="flex items-center justify-center py-8">
+                                            <Loader2 className="w-6 h-6 animate-spin text-slate-500" />
+                                        </div>
+                                    ) : localWorkers && localWorkers.length > 0 ? (
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full border-collapse border border-slate-200 text-xs">
+                                                <thead className="bg-slate-50">
+                                                    <tr>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">ID</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">NRIC/FIN</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">Name</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">Designation</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">Date Joined</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">Bank</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">Basic/Day</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">Monthly Allow.</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">OT Rate</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">Sun/PH Rate</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">AL Limit</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">MC Limit</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">AL Balance</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">MC Balance</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">CPF Emp %</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">CPF Empr %</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">SINDA</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {localWorkers.map((w) => (
+                                                        <tr key={w.employee_id}>
+                                                            <td className="border border-slate-200 px-2 py-1">{w.employee_id}</td>
+                                                            <td className="border border-slate-200 px-2 py-1">{w.nric_fin}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 font-medium">{w.employee_name}</td>
+                                                            <td className="border border-slate-200 px-2 py-1">{w.designation}</td>
+                                                    <td className="border border-slate-200 px-2 py-1">{w.date_joined}</td>
+                                                    <td className="border border-slate-200 px-2 py-1">{w.bank_account_number}</td>
+                                                    <td className="border border-slate-200 px-2 py-1 text-right">{formatAmount(w.basic_salary_per_day)}</td>
+                                                    <td className="border border-slate-200 px-2 py-1 text-right">{formatAmount(w.monthly_allowance)}</td>
+                                                    <td className="border border-slate-200 px-2 py-1 text-right">{formatAmount(w.ot_rate_per_hour)}</td>
+                                                    <td className="border border-slate-200 px-2 py-1 text-right">{formatAmount(w.sun_ph_rate_per_day)}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{w.annual_leave_limit}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{w.medical_leave_limit}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{w.annual_leave_balance}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{w.medical_leave_balance}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{w.cpf_employee_contribution}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{w.cpf_employer_contribution}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{formatAmount(w.sinda_contribution)}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    ) : (
+                                        <div className="text-sm text-slate-500">No local workers found.</div>
+                                    )}
+                                </CardContent>
+                            </Card>
+
+                            <Card className="border-0 shadow-lg">
+                                <CardContent className="p-6">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <div>
+                                            <h3 className="text-lg font-semibold text-slate-700">Foreign Workers (worker_details)</h3>
+                                            <p className="text-sm text-slate-500">All foreign workers and salary details</p>
+                                        </div>
+                                    </div>
+                                    {isLoadingForeignWorkers ? (
+                                        <div className="flex items-center justify-center py-8">
+                                            <Loader2 className="w-6 h-6 animate-spin text-slate-500" />
+                                        </div>
+                                    ) : foreignWorkers && foreignWorkers.length > 0 ? (
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full border-collapse border border-slate-200 text-xs">
+                                                <thead className="bg-slate-50">
+                                                    <tr>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">ID</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">NRIC/FIN</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">Name</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">Designation</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">Date Joined</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-left">Bank</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">Basic/Day</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">Monthly Allow.</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">OT Rate</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">Sun/PH Rate</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">AL Limit</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">MC Limit</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">AL Balance</th>
+                                                        <th className="border border-slate-200 px-2 py-1 text-right">MC Balance</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {foreignWorkers.map((w) => (
+                                                        <tr key={w.employee_id}>
+                                                            <td className="border border-slate-200 px-2 py-1">{w.employee_id}</td>
+                                                            <td className="border border-slate-200 px-2 py-1">{w.nric_fin}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 font-medium">{w.employee_name}</td>
+                                                            <td className="border border-slate-200 px-2 py-1">{w.designation}</td>
+                                                        <td className="border border-slate-200 px-2 py-1">{w.date_joined}</td>
+                                                        <td className="border border-slate-200 px-2 py-1">{w.bank_account_number}</td>
+                                                        <td className="border border-slate-200 px-2 py-1 text-right">{formatAmount(w.basic_salary_per_day)}</td>
+                                                        <td className="border border-slate-200 px-2 py-1 text-right">{formatAmount(w.monthly_allowance)}</td>
+                                                        <td className="border border-slate-200 px-2 py-1 text-right">{formatAmount(w.ot_rate_per_hour)}</td>
+                                                        <td className="border border-slate-200 px-2 py-1 text-right">{formatAmount(w.sun_ph_rate_per_day)}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{w.annual_leave_limit}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{w.medical_leave_limit}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{w.annual_leave_balance}</td>
+                                                            <td className="border border-slate-200 px-2 py-1 text-right">{w.medical_leave_balance}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    ) : (
+                                        <div className="text-sm text-slate-500">No foreign workers found.</div>
+                                    )}
                                 </CardContent>
                             </Card>
                         </div>
@@ -4995,13 +5158,13 @@ export default function AdminDashboard() {
                             />
                         </div>
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Basic Allowance 1 per Month ($)</label>
+                            <label className="text-sm font-medium">Monthly Allowance ($)</label>
                             <Input
                                 type="number"
                                 step="0.01"
                                 placeholder="150.00"
-                                value={workerFormData.basic_allowance_1}
-                                onChange={(e) => setWorkerFormData({ ...workerFormData, basic_allowance_1: e.target.value })}
+                                value={workerFormData.monthly_allowance}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, monthly_allowance: e.target.value })}
                             />
                         </div>
                         <div className="space-y-2">
@@ -5264,8 +5427,8 @@ export default function AdminDashboard() {
                                 type="number"
                                 step="0.01"
                                 placeholder="0.00"
-                                value={workerFormData.basic_allowance_1}
-                                onChange={(e) => setWorkerFormData({ ...workerFormData, basic_allowance_1: e.target.value })}
+                                value={workerFormData.monthly_allowance}
+                                onChange={(e) => setWorkerFormData({ ...workerFormData, monthly_allowance: e.target.value })}
                             />
                         </div>
                         <div className="space-y-2">
