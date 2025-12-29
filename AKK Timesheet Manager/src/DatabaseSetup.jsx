@@ -68,6 +68,29 @@ CREATE TABLE IF NOT EXISTS breaks (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Step 5b: Ensure sites table exists for site management + QR scanning
+CREATE TABLE IF NOT EXISTS public.sites (
+   id text not null,
+   site_name text not null,
+   latitude numeric(10, 8) null,
+   longitude numeric(11, 8) null,
+   qr_token text null,
+   created_at timestamp with time zone null default now(),
+   constraint sites_pkey primary key (id)
+ ) TABLESPACE pg_default;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_qr_token ON public.sites(qr_token);
+
+ALTER TABLE public.sites ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "sites_select_policy" ON public.sites;
+DROP POLICY IF EXISTS "sites_insert_policy" ON public.sites;
+DROP POLICY IF EXISTS "sites_update_policy" ON public.sites;
+DROP POLICY IF EXISTS "sites_delete_policy" ON public.sites;
+CREATE POLICY "sites_select_policy" ON public.sites FOR SELECT USING (true);
+CREATE POLICY "sites_insert_policy" ON public.sites FOR INSERT WITH CHECK (true);
+CREATE POLICY "sites_update_policy" ON public.sites FOR UPDATE USING (true) WITH CHECK (true);
+CREATE POLICY "sites_delete_policy" ON public.sites FOR DELETE USING (true);
+
 -- Enable RLS on breaks table if not already enabled
 ALTER TABLE breaks ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "breaks_select_policy" ON breaks;

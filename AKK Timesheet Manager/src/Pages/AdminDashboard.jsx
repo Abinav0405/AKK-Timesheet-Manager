@@ -26,6 +26,7 @@ import { createPageUrl } from "@/lib/utils";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import * as XLSX from 'xlsx';
+import QRCode from "qrcode";
 import { toast } from "sonner";
 import { sendBrowserNotification } from "@/lib/emailNotification";
 import { formatTime, formatDate, isSunday, isPublicHoliday, calculateShiftHours } from "@/lib/timeUtils";
@@ -84,6 +85,52 @@ export default function AdminDashboard() {
         breaks: [{ break_start: '', break_end: '' }],
         leave_type: '__none__'
     });
+
+    const [showAddSiteDialog, setShowAddSiteDialog] = useState(false);
+    const [showEditSiteDialog, setShowEditSiteDialog] = useState(false);
+    const [pendingDeleteSite, setPendingDeleteSite] = useState(null);
+    const [editingSite, setEditingSite] = useState(null);
+    const [siteFormData, setSiteFormData] = useState({
+        id: '',
+        site_name: '',
+        latitude: '',
+        longitude: '',
+        qr_token: ''
+    });
+    const [siteQrDataUrl, setSiteQrDataUrl] = useState('');
+
+    const generateId = () => {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+        return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    };
+
+    const generateQrToken = () => {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+        return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    };
+
+    useEffect(() => {
+        let isActive = true;
+        const token = siteFormData.qr_token;
+        if (!token) {
+            setSiteQrDataUrl('');
+            return () => {
+                isActive = false;
+            };
+        }
+
+        QRCode.toDataURL(token, { margin: 1, width: 256 })
+            .then((url) => {
+                if (isActive) setSiteQrDataUrl(url);
+            })
+            .catch(() => {
+                if (isActive) setSiteQrDataUrl('');
+            });
+
+        return () => {
+            isActive = false;
+        };
+    }, [siteFormData.qr_token, showAddSiteDialog, showEditSiteDialog]);
 
     const pad2 = (value) => String(value).padStart(2, '0');
     const toDateTimeLocalUtc = (isoValue) => {
@@ -1234,6 +1281,20 @@ export default function AdminDashboard() {
         enabled: !!adminEmail // Only fetch if admin is logged in
     });
 
+    const { data: allSites = [], isLoading: isLoadingSites } = useQuery({
+        queryKey: ['sites'],
+        queryFn: async () => {
+            const { data, error } = await supabase
+                .from('sites')
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            if (error) throw error;
+            return data || [];
+        },
+        enabled: !!adminEmail
+    });
+
     const prevShiftsRef = useRef([]);
 
     useEffect(() => {
@@ -1297,6 +1358,125 @@ export default function AdminDashboard() {
             toast.success('Shift deleted successfully');
         },
     });
+
+    const addSiteMutation = useMutation({
+        mutationFn: async (siteData) => {
+            const { data, error } = await supabase
+                .from('sites')
+                .insert([siteData])
+                .select('*')
+                .single();
+            if (error) throw error;
+            return data;
+        },
+        onSuccess: (createdSite) => {
+            queryClient.invalidateQueries({ queryKey: ['sites'] });
+            toast.success(`Site added. QR Token: ${createdSite.qr_token}`);
+            setShowAddSiteDialog(false);
+            setEditingSite(createdSite);
+            setSiteFormData({
+                id: createdSite.id || '',
+                site_name: createdSite.site_name || '',
+                latitude: createdSite.latitude ?? '',
+                longitude: createdSite.longitude ?? '',
+                qr_token: createdSite.qr_token || ''
+            });
+            setShowEditSiteDialog(true);
+        },
+        onError: (error) => {
+            toast.error(error?.message || 'Failed to add site');
+        }
+    });
+
+    const updateSiteMutation = useMutation({
+        mutationFn: async ({ id, updates }) => {
+            const { data, error } = await supabase
+                .from('sites')
+                .update(updates)
+                .eq('id', id)
+                .select('*')
+                .single();
+            if (error) throw error;
+            return data;
+        },
+        onSuccess: (updatedSite) => {
+            queryClient.invalidateQueries({ queryKey: ['sites'] });
+            toast.success(`Site updated. QR Token: ${updatedSite.qr_token}`);
+            setEditingSite(updatedSite);
+            setSiteFormData({
+                id: updatedSite.id || '',
+                site_name: updatedSite.site_name || '',
+                latitude: updatedSite.latitude ?? '',
+                longitude: updatedSite.longitude ?? '',
+                qr_token: updatedSite.qr_token || ''
+            });
+        },
+        onError: (error) => {
+            toast.error(error?.message || 'Failed to update site');
+        }
+    });
+
+    const deleteSiteMutation = useMutation({
+        mutationFn: async (siteId) => {
+            const { error } = await supabase
+                .from('sites')
+                .delete()
+                .eq('id', siteId);
+            if (error) throw error;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['sites'] });
+            toast.success('Site deleted');
+            setPendingDeleteSite(null);
+        },
+        onError: (error) => {
+            toast.error(error?.message || 'Failed to delete site');
+        }
+    });
+
+    const openAddSiteDialog = () => {
+        const id = generateId();
+        const qrToken = generateQrToken();
+        setSiteFormData({
+            id,
+            site_name: '',
+            latitude: '',
+            longitude: '',
+            qr_token: qrToken
+        });
+        setSiteQrDataUrl('');
+        setShowAddSiteDialog(true);
+    };
+
+    const openEditSiteDialog = (site) => {
+        setEditingSite(site);
+        setSiteFormData({
+            id: site.id || '',
+            site_name: site.site_name || '',
+            latitude: site.latitude ?? '',
+            longitude: site.longitude ?? '',
+            qr_token: site.qr_token || ''
+        });
+        setShowEditSiteDialog(true);
+    };
+
+    const downloadSiteQr = async ({ qr_token, site_name }) => {
+        if (!qr_token) {
+            toast.error('QR token not available for this site');
+            return;
+        }
+        try {
+            const dataUrl = await QRCode.toDataURL(qr_token, { margin: 2, width: 512 });
+            const a = document.createElement('a');
+            a.href = dataUrl;
+            a.download = `${(site_name || 'site').replaceAll(' ', '_')}_qr.png`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        } catch (e) {
+            toast.error('Failed to generate QR code');
+        }
+    };
 
     // Worker mutations
     const addWorkerMutation = useMutation({
@@ -3366,7 +3546,7 @@ export default function AdminDashboard() {
             {/* Main Dashboard Tabs */}
             <div className="max-w-6xl mx-auto px-4 py-6">
                 <Tabs defaultValue="time-tracker" className="w-full">
-                    <TabsList className="grid w-full grid-cols-4 bg-slate-100">
+                    <TabsList className="grid w-full grid-cols-5 bg-slate-100">
                         <TabsTrigger value="time-tracker" className="flex items-center gap-2">
                             <Clock className="w-4 h-4" />
                             Time Tracker
@@ -3390,6 +3570,10 @@ export default function AdminDashboard() {
                         <TabsTrigger value="worker-info" className="flex items-center gap-2">
                             <Users className="w-4 h-4" />
                             Worker Information
+                        </TabsTrigger>
+                        <TabsTrigger value="sites" className="flex items-center gap-2">
+                            <MapPin className="w-4 h-4" />
+                            Sites
                         </TabsTrigger>
                     </TabsList>
 
@@ -3994,8 +4178,384 @@ export default function AdminDashboard() {
                             </Card>
                         </div>
                     </TabsContent>
+
+                    <TabsContent value="sites" className="mt-6">
+                        <Card className="border-0 shadow-lg">
+                            <CardContent className="p-6">
+                                <div className="flex items-center justify-between gap-4 mb-6">
+                                    <div>
+                                        <h3 className="text-xl font-semibold text-slate-700">Sites</h3>
+                                        <p className="text-sm text-slate-500">Manage site locations and QR tokens</p>
+                                    </div>
+                                    <Button className="bg-blue-600 hover:bg-blue-700" onClick={openAddSiteDialog}>
+                                        Add Site
+                                    </Button>
+                                </div>
+
+                                {isLoadingSites ? (
+                                    <div className="flex items-center justify-center py-10">
+                                        <Loader2 className="w-6 h-6 animate-spin text-slate-500" />
+                                    </div>
+                                ) : allSites.length === 0 ? (
+                                    <div className="text-center py-10">
+                                        <MapPin className="w-16 h-16 mx-auto text-slate-300 mb-4" />
+                                        <h4 className="text-lg font-medium text-slate-700 mb-2">No Sites</h4>
+                                        <p className="text-slate-500">Add your first site to generate a QR token</p>
+                                    </div>
+                                ) : (
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full border-collapse text-sm">
+                                            <thead>
+                                                <tr className="bg-slate-50">
+                                                    <th className="border border-slate-200 px-3 py-2 text-left">Site Name</th>
+                                                    <th className="border border-slate-200 px-3 py-2 text-left">Site ID</th>
+                                                    <th className="border border-slate-200 px-3 py-2 text-left">Latitude</th>
+                                                    <th className="border border-slate-200 px-3 py-2 text-left">Longitude</th>
+                                                    <th className="border border-slate-200 px-3 py-2 text-left">QR Token</th>
+                                                    <th className="border border-slate-200 px-3 py-2 text-right">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {allSites.map((site) => (
+                                                    <tr key={site.id}>
+                                                        <td className="border border-slate-200 px-3 py-2">{site.site_name}</td>
+                                                        <td className="border border-slate-200 px-3 py-2 font-mono text-xs">{site.id}</td>
+                                                        <td className="border border-slate-200 px-3 py-2 font-mono text-xs">
+                                                            {site.latitude ?? ''}
+                                                        </td>
+                                                        <td className="border border-slate-200 px-3 py-2 font-mono text-xs">
+                                                            {site.longitude ?? ''}
+                                                        </td>
+                                                        <td className="border border-slate-200 px-3 py-2 font-mono text-xs">
+                                                            {site.qr_token ?? ''}
+                                                        </td>
+                                                        <td className="border border-slate-200 px-3 py-2">
+                                                            <div className="flex justify-end gap-2">
+                                                                <Button
+                                                                    size="sm"
+                                                                    variant="outline"
+                                                                    onClick={() => downloadSiteQr(site)}
+                                                                >
+                                                                    Download QR
+                                                                </Button>
+                                                                <Button
+                                                                    size="sm"
+                                                                    className="bg-slate-700 hover:bg-slate-800"
+                                                                    onClick={() => openEditSiteDialog(site)}
+                                                                >
+                                                                    Edit
+                                                                </Button>
+                                                                <Button
+                                                                    size="sm"
+                                                                    variant="destructive"
+                                                                    onClick={() => setPendingDeleteSite(site)}
+                                                                >
+                                                                    Delete
+                                                                </Button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    </TabsContent>
                 </Tabs>
             </div>
+
+    <Dialog open={showAddSiteDialog} onOpenChange={setShowAddSiteDialog}>
+        <DialogContent className="max-w-2xl">
+            <DialogHeader>
+                <DialogTitle>Add Site</DialogTitle>
+                <DialogDescription>
+                    Create a new site and generate a QR token for scanning.
+                </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Site Name</label>
+                        <Input
+                            value={siteFormData.site_name}
+                            onChange={(e) => setSiteFormData({ ...siteFormData, site_name: e.target.value })}
+                            placeholder="e.g. Kaki Bukit Office"
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Site ID</label>
+                        <Input value={siteFormData.id} readOnly className="font-mono text-xs" />
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Latitude (Optional)</label>
+                        <Input
+                            value={siteFormData.latitude}
+                            onChange={(e) => setSiteFormData({ ...siteFormData, latitude: e.target.value })}
+                            placeholder="1.300000"
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Longitude (Optional)</label>
+                        <Input
+                            value={siteFormData.longitude}
+                            onChange={(e) => setSiteFormData({ ...siteFormData, longitude: e.target.value })}
+                            placeholder="103.800000"
+                        />
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">QR Token</label>
+                        <Input value={siteFormData.qr_token} readOnly className="font-mono text-xs" />
+                        <div className="flex gap-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={async () => {
+                                    try {
+                                        await navigator.clipboard.writeText(siteFormData.qr_token || '');
+                                        toast.success('QR token copied');
+                                    } catch {
+                                        toast.error('Failed to copy');
+                                    }
+                                }}
+                            >
+                                Copy Token
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => {
+                                    const newToken = generateQrToken();
+                                    setSiteFormData({ ...siteFormData, qr_token: newToken });
+                                }}
+                            >
+                                Regenerate
+                            </Button>
+                        </div>
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">QR Code</label>
+                        <div className="border border-slate-200 rounded-md p-3 flex items-center justify-center bg-white">
+                            {siteQrDataUrl ? (
+                                <img src={siteQrDataUrl} alt="QR Code" className="w-40 h-40" />
+                            ) : (
+                                <span className="text-sm text-slate-500">QR preview not available</span>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <DialogFooter>
+                <Button variant="outline" onClick={() => setShowAddSiteDialog(false)}>
+                    Cancel
+                </Button>
+                <Button
+                    className="bg-blue-600 hover:bg-blue-700"
+                    disabled={addSiteMutation.isPending}
+                    onClick={() => {
+                        const site_name = siteFormData.site_name.trim();
+                        if (!site_name) {
+                            toast.error('Site name is required');
+                            return;
+                        }
+
+                        const latitude = siteFormData.latitude === '' ? null : Number(siteFormData.latitude);
+                        const longitude = siteFormData.longitude === '' ? null : Number(siteFormData.longitude);
+                        if (latitude !== null && Number.isNaN(latitude)) {
+                            toast.error('Latitude must be a number');
+                            return;
+                        }
+                        if (longitude !== null && Number.isNaN(longitude)) {
+                            toast.error('Longitude must be a number');
+                            return;
+                        }
+
+                        addSiteMutation.mutate({
+                            id: siteFormData.id || generateId(),
+                            site_name,
+                            latitude,
+                            longitude,
+                            qr_token: siteFormData.qr_token || generateQrToken()
+                        });
+                    }}
+                >
+                    {addSiteMutation.isPending ? 'Adding...' : 'Add Site'}
+                </Button>
+            </DialogFooter>
+        </DialogContent>
+    </Dialog>
+
+    <Dialog open={showEditSiteDialog} onOpenChange={setShowEditSiteDialog}>
+        <DialogContent className="max-w-2xl">
+            <DialogHeader>
+                <DialogTitle>Edit Site</DialogTitle>
+                <DialogDescription>
+                    Update site details and QR token.
+                </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Site Name</label>
+                        <Input
+                            value={siteFormData.site_name}
+                            onChange={(e) => setSiteFormData({ ...siteFormData, site_name: e.target.value })}
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Site ID</label>
+                        <Input value={siteFormData.id} readOnly className="font-mono text-xs" />
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Latitude (Optional)</label>
+                        <Input
+                            value={siteFormData.latitude}
+                            onChange={(e) => setSiteFormData({ ...siteFormData, latitude: e.target.value })}
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Longitude (Optional)</label>
+                        <Input
+                            value={siteFormData.longitude}
+                            onChange={(e) => setSiteFormData({ ...siteFormData, longitude: e.target.value })}
+                        />
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">QR Token</label>
+                        <Input value={siteFormData.qr_token} readOnly className="font-mono text-xs" />
+                        <div className="flex gap-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={async () => {
+                                    try {
+                                        await navigator.clipboard.writeText(siteFormData.qr_token || '');
+                                        toast.success('QR token copied');
+                                    } catch {
+                                        toast.error('Failed to copy');
+                                    }
+                                }}
+                            >
+                                Copy Token
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => {
+                                    const newToken = generateQrToken();
+                                    setSiteFormData({ ...siteFormData, qr_token: newToken });
+                                }}
+                            >
+                                Regenerate
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => downloadSiteQr({ qr_token: siteFormData.qr_token, site_name: siteFormData.site_name })}
+                            >
+                                Download QR
+                            </Button>
+                        </div>
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">QR Code</label>
+                        <div className="border border-slate-200 rounded-md p-3 flex items-center justify-center bg-white">
+                            {siteQrDataUrl ? (
+                                <img src={siteQrDataUrl} alt="QR Code" className="w-40 h-40" />
+                            ) : (
+                                <span className="text-sm text-slate-500">QR preview not available</span>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <DialogFooter>
+                <Button
+                    variant="outline"
+                    onClick={() => {
+                        setShowEditSiteDialog(false);
+                        setEditingSite(null);
+                    }}
+                >
+                    Close
+                </Button>
+                <Button
+                    className="bg-blue-600 hover:bg-blue-700"
+                    disabled={updateSiteMutation.isPending}
+                    onClick={() => {
+                        if (!siteFormData.id) {
+                            toast.error('Missing site id');
+                            return;
+                        }
+                        const site_name = siteFormData.site_name.trim();
+                        if (!site_name) {
+                            toast.error('Site name is required');
+                            return;
+                        }
+
+                        const latitude = siteFormData.latitude === '' ? null : Number(siteFormData.latitude);
+                        const longitude = siteFormData.longitude === '' ? null : Number(siteFormData.longitude);
+                        if (latitude !== null && Number.isNaN(latitude)) {
+                            toast.error('Latitude must be a number');
+                            return;
+                        }
+                        if (longitude !== null && Number.isNaN(longitude)) {
+                            toast.error('Longitude must be a number');
+                            return;
+                        }
+
+                        const qr_token = siteFormData.qr_token || generateQrToken();
+
+                        updateSiteMutation.mutate({
+                            id: siteFormData.id,
+                            updates: { site_name, latitude, longitude, qr_token }
+                        });
+                    }}
+                >
+                    {updateSiteMutation.isPending ? 'Saving...' : 'Save Changes'}
+                </Button>
+            </DialogFooter>
+        </DialogContent>
+    </Dialog>
+
+    <Dialog open={!!pendingDeleteSite} onOpenChange={(open) => !open && setPendingDeleteSite(null)}>
+        <DialogContent>
+            <DialogHeader>
+                <DialogTitle>Delete Site</DialogTitle>
+                <DialogDescription>
+                    This will delete the site: {pendingDeleteSite?.site_name}
+                </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+                <Button variant="outline" onClick={() => setPendingDeleteSite(null)}>
+                    Cancel
+                </Button>
+                <Button
+                    variant="destructive"
+                    disabled={deleteSiteMutation.isPending}
+                    onClick={() => {
+                        if (!pendingDeleteSite?.id) return;
+                        deleteSiteMutation.mutate(pendingDeleteSite.id);
+                    }}
+                >
+                    {deleteSiteMutation.isPending ? 'Deleting...' : 'Delete'}
+                </Button>
+            </DialogFooter>
+        </DialogContent>
+    </Dialog>
 
     {/* Worker Type Selection Dialog for Printing */}
     <Dialog open={printWorkerTypeDialog} onOpenChange={setPrintWorkerTypeDialog}>
