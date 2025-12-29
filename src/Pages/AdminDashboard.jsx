@@ -214,6 +214,32 @@ export default function AdminDashboard() {
 
     const prevShiftsRef = useRef([]);
 
+    const { data: localWorkers = [], isLoading: isLoadingLocalWorkers } = useQuery({
+        queryKey: ['local_worker_details'],
+        queryFn: async () => {
+            const { data, error } = await supabase
+                .from('local_worker_details')
+                .select('*')
+                .order('employee_id');
+            if (error) throw error;
+            return data || [];
+        },
+        enabled: !!adminEmail
+    });
+
+    const { data: foreignWorkers = [], isLoading: isLoadingForeignWorkers } = useQuery({
+        queryKey: ['worker_details'],
+        queryFn: async () => {
+            const { data, error } = await supabase
+                .from('worker_details')
+                .select('*')
+                .order('employee_id');
+            if (error) throw error;
+            return data || [];
+        },
+        enabled: !!adminEmail
+    });
+
     useEffect(() => {
         const checkNewShifts = async () => {
             if (!isLoading && shifts.length >= 0) {
@@ -828,6 +854,105 @@ export default function AdminDashboard() {
                         </div>
                     </CardContent>
                 </Card>
+            </div>
+
+            <div className="max-w-6xl mx-auto px-4 pb-8">
+                <h2 className="text-xl font-semibold mb-4">Worker Details</h2>
+                <div className="grid grid-cols-1 gap-6">
+                    <Card className="border-0 shadow-lg">
+                        <CardContent className="p-4">
+                            <h3 className="text-lg font-semibold mb-3">Local Workers (local_worker_details)</h3>
+                            {isLoadingLocalWorkers ? (
+                                <div className="flex items-center justify-center py-6">
+                                    <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                                    <span className="text-sm text-slate-600">Loading local workers...</span>
+                                </div>
+                            ) : localWorkers.length === 0 ? (
+                                <p className="text-sm text-slate-500">No local workers found.</p>
+                            ) : (
+                                <div className="overflow-x-auto">
+                                    <table className="w-full border-collapse text-sm">
+                                        <thead>
+                                            <tr className="bg-slate-50">
+                                                <th className="border border-slate-200 px-3 py-2 text-left">Employee ID</th>
+                                                <th className="border border-slate-200 px-3 py-2 text-left">Name</th>
+                                                <th className="border border-slate-200 px-3 py-2 text-left">Designation</th>
+                                                <th className="border border-slate-200 px-3 py-2 text-left">Date Joined</th>
+                                                <th className="border border-slate-200 px-3 py-2 text-right">Basic/Day</th>
+                                                <th className="border border-slate-200 px-3 py-2 text-right">Monthly Allowance</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {localWorkers.map((w) => (
+                                                <tr key={w.employee_id}>
+                                                    <td className="border border-slate-200 px-3 py-2 font-mono text-xs">{w.employee_id}</td>
+                                                    <td className="border border-slate-200 px-3 py-2">{w.employee_name || w.name}</td>
+                                                    <td className="border border-slate-200 px-3 py-2">{w.designation}</td>
+                                                    <td className="border border-slate-200 px-3 py-2">
+                                                        {w.date_joined ? formatDate(w.date_joined) : ''}
+                                                    </td>
+                                                    <td className="border border-slate-200 px-3 py-2 text-right">
+                                                        {w.basic_salary_per_day != null ? Number(w.basic_salary_per_day).toFixed(2) : ''}
+                                                    </td>
+                                                    <td className="border border-slate-200 px-3 py-2 text-right">
+                                                        {w.monthly_allowance != null ? Number(w.monthly_allowance).toFixed(2) : ''}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+
+                    <Card className="border-0 shadow-lg">
+                        <CardContent className="p-4">
+                            <h3 className="text-lg font-semibold mb-3">Foreign Workers (worker_details)</h3>
+                            {isLoadingForeignWorkers ? (
+                                <div className="flex items-center justify-center py-6">
+                                    <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                                    <span className="text-sm text-slate-600">Loading foreign workers...</span>
+                                </div>
+                            ) : foreignWorkers.length === 0 ? (
+                                <p className="text-sm text-slate-500">No foreign workers found.</p>
+                            ) : (
+                                <div className="overflow-x-auto">
+                                    <table className="w-full border-collapse text-sm">
+                                        <thead>
+                                            <tr className="bg-slate-50">
+                                                <th className="border border-slate-200 px-3 py-2 text-left">Employee ID</th>
+                                                <th className="border border-slate-200 px-3 py-2 text-left">Name</th>
+                                                <th className="border border-slate-200 px-3 py-2 text-left">Designation</th>
+                                                <th className="border border-slate-200 px-3 py-2 text-left">Date Joined</th>
+                                                <th className="border border-slate-200 px-3 py-2 text-right">Basic/Day</th>
+                                                <th className="border border-slate-200 px-3 py-2 text-right">Monthly Allowance</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {foreignWorkers.map((w) => (
+                                                <tr key={w.employee_id}>
+                                                    <td className="border border-slate-200 px-3 py-2 font-mono text-xs">{w.employee_id}</td>
+                                                    <td className="border border-slate-200 px-3 py-2">{w.employee_name || w.name}</td>
+                                                    <td className="border border-slate-200 px-3 py-2">{w.designation}</td>
+                                                    <td className="border border-slate-200 px-3 py-2">
+                                                        {w.date_joined ? formatDate(w.date_joined) : ''}
+                                                    </td>
+                                                    <td className="border border-slate-200 px-3 py-2 text-right">
+                                                        {w.basic_salary_per_day != null ? Number(w.basic_salary_per_day).toFixed(2) : ''}
+                                                    </td>
+                                                    <td className="border border-slate-200 px-3 py-2 text-right">
+                                                        {w.monthly_allowance != null ? Number(w.monthly_allowance).toFixed(2) : ''}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                </div>
             </div>
 
             {/* Logo Settings */}

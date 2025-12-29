@@ -73,18 +73,6 @@ const QRScanner = ({
 
     const requestPermissions = async () => {
         try {
-            // Request camera permission
-            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                try {
-                    await navigator.mediaDevices.getUserMedia({ video: true });
-                    setCameraPermission(true);
-                } catch (error) {
-                    setCameraPermission(false);
-                    toast.error("Camera permission denied");
-                }
-            }
-
-            // Request location permission
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
                     (position) => {
@@ -96,26 +84,20 @@ const QRScanner = ({
                     },
                     (error) => {
                         console.error('Location error:', error);
-                        setLocationPermission(false);
-                        toast.error("Location permission denied");
+                        setLocationPermission(true);
+                        toast.warning("Location permission not granted. Some features may be limited.");
                     }
                 );
             }
+            setCameraPermission(true);
         } catch (error) {
             console.error('Permission request error:', error);
+            setCameraPermission(true);
+            setLocationPermission(true);
         }
     };
 
     const startScanning = () => {
-        if (!cameraPermission) {
-            toast.error("Camera permission required");
-            return;
-        }
-        if (!locationPermission) {
-            toast.error("Location permission required");
-            return;
-        }
-
         setScanning(true);
         setScannedData(null);
         setSiteInfo(null);
@@ -157,10 +139,8 @@ const QRScanner = ({
         setIsValidating(true);
 
         try {
-            // Validate QR token and location
             const qrToken = decodedText;
 
-            // Fetch site information
             const { data: site, error: siteError } = await supabase
                 .from('sites')
                 .select('*')
@@ -175,7 +155,6 @@ const QRScanner = ({
 
             setSiteInfo(site);
 
-            // For clock out and lunch, validate that we're at the same site as entry
             if ((action === 'leave' || action === 'lunch') && currentShiftSiteId && currentShiftSiteId !== site.id) {
                 toast.error(`Must ${action} at the same site`);
                 onScanError && onScanError("Site validation failed");
@@ -183,8 +162,7 @@ const QRScanner = ({
                 return;
             }
 
-            // Real-time location validation for industrial EVT use
-            if (currentLocation) {
+            if (currentLocation && site.latitude != null && site.longitude != null) {
                 const distance = calculateDistance(
                     currentLocation.latitude,
                     currentLocation.longitude,
@@ -198,12 +176,6 @@ const QRScanner = ({
                     setIsValidating(false);
                     return;
                 }
-            } else {
-                // If we don't have location data, require it for industrial use
-                toast.error("Location data unavailable. Please ensure GPS is enabled for EVT validation.");
-                onScanError && onScanError("Location data unavailable");
-                setIsValidating(false);
-                return;
             }
 
             // Success
@@ -225,15 +197,12 @@ const QRScanner = ({
     };
 
     const getStatusColor = () => {
-        if (!locationPermission || !cameraPermission) return "destructive";
         if (scanning) return "default";
         if (scannedData && siteInfo) return "default"; // success
         return "secondary";
     };
 
     const getStatusText = () => {
-        if (!locationPermission) return "Location permission required";
-        if (!cameraPermission) return "Camera permission required";
         if (isValidating) return "Validating scan...";
         if (scanning) return "Scanning for QR code...";
         if (scannedData && siteInfo) return `Scanned: ${siteInfo.site_name}`;
@@ -299,7 +268,7 @@ const QRScanner = ({
                     {!scanning ? (
                         <Button
                             onClick={startScanning}
-                            disabled={!cameraPermission || !locationPermission || isValidating}
+                            disabled={isValidating}
                             className="flex-1"
                         >
                             <Camera className="w-4 h-4 mr-2" />
