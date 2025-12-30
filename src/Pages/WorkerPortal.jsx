@@ -15,7 +15,7 @@ import {
 } from "@/Components/ui/dialog";
 import {
     Clock, LogIn, Coffee, LogOut, History, ArrowLeft,
-    MapPin, Calendar, User, CheckCircle, AlertCircle, FileText, Loader2, Download
+    MapPin, Calendar, User, CheckCircle, AlertCircle, FileText, Loader2, Download, Key
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
@@ -33,6 +33,12 @@ export default function WorkerPortal() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [showLeaveRequestDialog, setShowLeaveRequestDialog] = useState(false);
     const [showPayslipDialog, setShowPayslipDialog] = useState(false);
+    const [showPasswordDialog, setShowPasswordDialog] = useState(false);
+    const [passwordData, setPasswordData] = useState({
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: ''
+    });
     const [leaveRequestData, setLeaveRequestData] = useState({
         leave_type: '',
         leave_duration: 'full_day',
@@ -66,6 +72,43 @@ export default function WorkerPortal() {
     const workerTable = workerType === 'local' ? 'local_worker_details' : 'worker_details';
     const idField = workerType === 'local' ? 'employee_id' : 'employee_id';
     const queryClient = useQueryClient();
+
+    // Submit leave request mutation
+    const submitLeaveRequestMutation = useMutation({
+        mutationFn: async (leaveData) => {
+            const { error } = await supabase
+                .from('leave_requests')
+                .insert([{
+                    employee_id: workerId,
+                    leave_type: leaveData.leave_type,
+                    leave_duration: leaveData.leave_duration,
+                    from_date: leaveData.from_date,
+                    to_date: leaveData.to_date,
+                    reason: leaveData.reason || '',
+                    status: 'pending',
+                    created_at: new Date().toISOString(),
+                    days_requested: leaveData.days_requested
+                }]);
+
+            if (error) throw error;
+        },
+        onSuccess: () => {
+            toast.success('Leave request submitted successfully!');
+            setShowLeaveRequestDialog(false);
+            setLeaveRequestData({
+                leave_type: '',
+                leave_duration: 'full_day',
+                from_date: '',
+                to_date: '',
+                reason: ''
+            });
+            queryClient.invalidateQueries(['workerLeaveHistory', workerId]);
+        },
+        onError: (error) => {
+            console.error('Error submitting leave request:', error);
+            toast.error(error.message || 'Failed to submit leave request');
+        }
+    });
 
     // Fetch worker's leave balances
     const { data: workerBalance, isLoading: isLoadingBalance } = useQuery({
@@ -761,76 +804,7 @@ export default function WorkerPortal() {
         }
     };
 
-    // Handle leave request submission
-    const handleLeaveRequest = async () => {
-        if (!leaveRequestData.leave_type || !leaveRequestData.from_date) {
-            toast.error("Please fill in all required fields");
-            return;
-        }
-
-        // Check if the worker has enough leave balance
-        const leaveType = leaveRequestData.leave_type.toLowerCase();
-        const balanceField = `${leaveType}_leave_balance`;
-        const currentBalance = workerBalance?.[balanceField] || 0;
-        
-        // Calculate number of days requested
-        const fromDate = new Date(leaveRequestData.from_date);
-        const toDate = leaveRequestData.leave_duration === 'full_day' ? 
-            new Date(leaveRequestData.from_date) : 
-            new Date(leaveRequestData.to_date);
-            
-        // Calculate days difference
-        const timeDiff = toDate - fromDate;
-        const daysDiff = Math.ceil(timeDiff / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end dates
-
-        if (currentBalance < daysDiff) {
-            toast.error(`Insufficient ${leaveType} leave balance. You have ${currentBalance} day(s) left.`);
-            return;
-        }
-
-        setIsProcessing(true);
-
-        try {
-            const { error } = await supabase
-                .from('leave_requests')
-                .insert([
-                    {
-                        employee_id: workerId,
-                        employee_name: workerName,
-                        leave_type: leaveRequestData.leave_type,
-                        leave_duration: leaveRequestData.leave_duration,
-                        from_date: leaveRequestData.from_date,
-                        to_date: leaveRequestData.leave_duration === 'full_day' ? 
-                            leaveRequestData.from_date : 
-                            leaveRequestData.to_date,
-                        reason: leaveRequestData.reason || '',
-                        status: 'pending',
-                        created_at: new Date().toISOString(),
-                        worker_type: workerType
-                    }
-                ]);
-
-            if (error) throw error;
-
-            // Update the worker's leave balance if the leave is approved (handled by admin)
-            // The actual deduction will happen when the admin approves the leave
-            toast.success("Leave request submitted successfully!");
-            setShowLeaveRequestDialog(false);
-            setLeaveRequestData({
-                leave_type: '',
-                leave_duration: 'full_day',
-                from_date: '',
-                to_date: '',
-                reason: ''
-            });
-        } catch (error) {
-            console.error('Error submitting leave request:', error);
-            toast.error(error.message || 'Failed to submit leave request');
-        } finally {
-            setIsProcessing(false);
-        }
-    };
-
+    
     const handleSubmitLeaveRequest = () => {
         if (!leaveRequestData.leave_type || !leaveRequestData.from_date || !leaveRequestData.to_date) {
             toast.error('Please fill in all required fields');
@@ -846,7 +820,7 @@ export default function WorkerPortal() {
         }
 
         // Define paid leave types at the start (fix hoisting issue)
-        const paidLeaveTypes = ['Annual Leave', 'Sick Leave & Hospitalisation Leave'];
+        const paidLeaveTypes = ['Annual Leave', 'Medical Leave'];
         const isPaidLeave = paidLeaveTypes.includes(leaveRequestData.leave_type);
 
         // Calculate the number of days requested (accounting for half-days and excluding Sundays for paid leave)
@@ -906,6 +880,92 @@ export default function WorkerPortal() {
         submitLeaveRequestMutation.mutate(leaveDataWithDays);
     };
 
+    // Handle password change
+    const handlePasswordChange = async () => {
+        if (!passwordData.currentPassword || !passwordData.newPassword || !passwordData.confirmPassword) {
+            toast.error('Please fill in all password fields');
+            return;
+        }
+
+        if (passwordData.newPassword !== passwordData.confirmPassword) {
+            toast.error('New passwords do not match');
+            return;
+        }
+
+        if (passwordData.newPassword.length < 4) {
+            toast.error('New password must be at least 4 characters long');
+            return;
+        }
+
+        setIsProcessing(true);
+
+        try {
+            // Get worker type and table name
+            const { data: workerCheck, error: workerError } = await supabase
+                .from('worker_details')
+                .select('employee_id')
+                .eq('employee_id', workerId)
+                .single();
+
+            let workerTable = 'worker_details';
+            if (workerError) {
+                // Try local_worker_details if not found in worker_details
+                const { data: localWorkerCheck } = await supabase
+                    .from('local_worker_details')
+                    .select('employee_id')
+                    .eq('employee_id', workerId)
+                    .single();
+                
+                if (localWorkerCheck) {
+                    workerTable = 'local_worker_details';
+                }
+            }
+
+            // Verify current password
+            const { data: currentWorker, error: verifyError } = await supabase
+                .from(workerTable)
+                .select('password_hash')
+                .eq('employee_id', workerId)
+                .single();
+
+            if (verifyError || !currentWorker) {
+                throw new Error('Worker not found');
+            }
+
+            if (currentWorker.password_hash !== passwordData.currentPassword) {
+                toast.error('Current password is incorrect');
+                return;
+            }
+
+            // Update password
+            const { error: updateError } = await supabase
+                .from(workerTable)
+                .update({ password_hash: passwordData.newPassword })
+                .eq('employee_id', workerId);
+
+            if (updateError) throw updateError;
+
+            toast.success('Password updated successfully!');
+            setShowPasswordDialog(false);
+            setPasswordData({
+                currentPassword: '',
+                newPassword: '',
+                confirmPassword: ''
+            });
+        } catch (error) {
+            console.error('Error updating password:', error);
+            toast.error(error.message || 'Failed to update password');
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
+    // Handle logout
+    const handleLogout = () => {
+        sessionStorage.clear();
+        window.location.href = createPageUrl('Home');
+    };
+
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200">
             {/* Header */}
@@ -948,32 +1008,53 @@ export default function WorkerPortal() {
                             <p className="font-medium">{workerName}</p>
                             <p className="text-sm text-slate-300">ID: {workerId}</p>
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex gap-1 sm:gap-2 flex-wrap">
                             <Link to={createPageUrl('LeaveHistory')}>
                                 <Button
                                     variant="outline"
-                                    className="border-white/30 text-white hover:bg-white/10 bg-transparent"
+                                    size="sm"
+                                    className="border-white/30 text-white hover:bg-white/10 bg-transparent px-2 sm:px-3"
                                 >
-                                    <Calendar className="w-4 h-4 mr-2" />
-                                    <span className="hidden sm:inline">Leave History</span>
+                                    <Calendar className="w-4 h-4 sm:mr-1" />
+                                    <span className="hidden lg:inline">Leave History</span>
                                 </Button>
                             </Link>
                             <Link to={createPageUrl('History')}>
                                 <Button
                                     variant="outline"
-                                    className="border-white/30 text-white hover:bg-white/10 bg-transparent"
+                                    size="sm"
+                                    className="border-white/30 text-white hover:bg-white/10 bg-transparent px-2 sm:px-3"
                                 >
-                                    <History className="w-4 h-4 mr-2" />
-                                    <span className="hidden sm:inline">History</span>
+                                    <History className="w-4 h-4 sm:mr-1" />
+                                    <span className="hidden lg:inline">History</span>
                                 </Button>
                             </Link>
                             <Button
                                 variant="outline"
-                                className="border-white/30 text-white hover:bg-white/10 bg-transparent"
+                                size="sm"
+                                className="border-white/30 text-white hover:bg-white/10 bg-transparent px-2 sm:px-3"
+                                onClick={() => setShowPasswordDialog(true)}
+                            >
+                                <Key className="w-4 h-4 sm:mr-1" />
+                                <span className="hidden lg:inline">Change Password</span>
+                            </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-white/30 text-white hover:bg-white/10 bg-transparent px-2 sm:px-3"
                                 onClick={() => setShowPayslipDialog(true)}
                             >
-                                <FileText className="w-4 h-4 mr-2" />
-                                <span className="hidden sm:inline">Payslips</span>
+                                <FileText className="w-4 h-4 sm:mr-1" />
+                                <span className="hidden lg:inline">Payslips</span>
+                            </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-white/30 text-white hover:bg-white/10 bg-transparent px-2 sm:px-3"
+                                onClick={handleLogout}
+                            >
+                                <LogOut className="w-4 h-4 sm:mr-1" />
+                                <span className="hidden lg:inline">Logout</span>
                             </Button>
                         </div>
                     </div>
@@ -1273,6 +1354,7 @@ export default function WorkerPortal() {
                     action={activeScan}
                     onScanSuccess={handleScanSuccess}
                     onScanError={handleScanError}
+                    requiredDistance={200}
                     currentShiftSiteId={(activeScan === 'leave' || activeScan === 'breaks') ? currentShift?.site_id : null}
                 />
                             </div>
@@ -1421,7 +1503,8 @@ export default function WorkerPortal() {
                                         <SelectItem value="Paternity Leave">Paternity Leave</SelectItem>
                                         <SelectItem value="Shared Parental Leave">Shared Parental Leave</SelectItem>
                                         <SelectItem value="Childcare Leave">Childcare Leave</SelectItem>
-                                        <SelectItem value="Sick Leave & Hospitalisation Leave">Sick Leave & Hospitalisation Leave</SelectItem>
+                                        <SelectItem value="Medical Leave">Medical Leave</SelectItem>
+                                        <SelectItem value="Hospitalization Leave">Hospitalization Leave</SelectItem>
                                         <SelectItem value="National Service (NS) Leave">National Service (NS) Leave</SelectItem>
                                         <SelectItem value="Adoption Leave">Adoption Leave</SelectItem>
                                         <SelectItem value="Non-Statutory Leave (Employer Provided)">Non-Statutory Leave (Employer Provided)</SelectItem>
@@ -1500,7 +1583,7 @@ export default function WorkerPortal() {
                             Cancel
                         </Button>
                         <Button
-                            onClick={handleLeaveRequest}
+                            onClick={handleSubmitLeaveRequest}
                             disabled={isProcessing}
                             className="bg-blue-600 hover:bg-blue-700"
                         >
@@ -1510,6 +1593,74 @@ export default function WorkerPortal() {
                                     Submitting...
                                 </>
                             ) : 'Submit Request'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Change Password Dialog */}
+            <Dialog open={showPasswordDialog} onOpenChange={setShowPasswordDialog}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Change Password</DialogTitle>
+                        <DialogDescription>
+                            Update your account password. Make sure to remember your new password.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Current Password</label>
+                            <Input
+                                type="password"
+                                placeholder="Enter current password"
+                                value={passwordData.currentPassword}
+                                onChange={(e) => setPasswordData({ ...passwordData, currentPassword: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">New Password</label>
+                            <Input
+                                type="password"
+                                placeholder="Enter new password"
+                                value={passwordData.newPassword}
+                                onChange={(e) => setPasswordData({ ...passwordData, newPassword: e.target.value })}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Confirm New Password</label>
+                            <Input
+                                type="password"
+                                placeholder="Confirm new password"
+                                value={passwordData.confirmPassword}
+                                onChange={(e) => setPasswordData({ ...passwordData, confirmPassword: e.target.value })}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button
+                            variant="outline"
+                            onClick={() => {
+                                setShowPasswordDialog(false);
+                                setPasswordData({
+                                    currentPassword: '',
+                                    newPassword: '',
+                                    confirmPassword: ''
+                                });
+                            }}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handlePasswordChange}
+                            disabled={isProcessing}
+                            className="bg-blue-600 hover:bg-blue-700"
+                        >
+                            {isProcessing ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Updating...
+                                </>
+                            ) : 'Update Password'}
                         </Button>
                     </DialogFooter>
                 </DialogContent>

@@ -106,12 +106,12 @@ export default function LeaveHistory() {
     };
 
     const annualLeaveUsed = calculateApprovedLeaveDays('Annual Leave');
-    const medicalLeaveUsed = calculateApprovedLeaveDays('Sick Leave & Hospitalisation Leave');
+    const medicalLeaveUsed = calculateApprovedLeaveDays('Medical Leave');
 
     const getLeaveTypeDisplay = (leaveType) => {
         const paidLeaves = [
             'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
-            'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+            'Childcare Leave', 'Medical Leave', 'Hospitalization Leave', 'National Service (NS) Leave',
             'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
             'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
             'Volunteer Leave'

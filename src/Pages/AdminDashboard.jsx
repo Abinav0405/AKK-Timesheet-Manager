@@ -370,17 +370,37 @@ export default function AdminDashboard() {
             // If we have leave requests, fetch worker details separately
             if (data && data.length > 0) {
                 const workerIds = [...new Set(data.map(request => request.employee_id))];
+                
+                // Try to fetch from worker_details first
                 const { data: workers, error: workersError } = await supabase
                     .from('worker_details')
                     .select('employee_id, employee_name')
                     .in('employee_id', workerIds);
+
+                // If some workers not found in worker_details, try local_worker_details
+                let allWorkers = workers || [];
+                if (workers && workers.length < workerIds.length) {
+                    const foundIds = new Set(workers.map(w => w.employee_id));
+                    const missingIds = workerIds.filter(id => !foundIds.has(id));
+                    
+                    if (missingIds.length > 0) {
+                        const { data: localWorkers, error: localError } = await supabase
+                            .from('local_worker_details')
+                            .select('employee_id, employee_name')
+                            .in('employee_id', missingIds);
+                        
+                        if (!localError && localWorkers) {
+                            allWorkers = [...allWorkers, ...localWorkers];
+                        }
+                    }
+                }
 
                 if (workersError) console.error('❌ Workers fetch error:', workersError);
 
                 // Merge data into leave requests
                 const leaveRequestsWithNames = data.map(request => ({
                     ...request,
-                    employee_name: workers?.find(w => w.employee_id === request.employee_id)?.employee_name || 'Unknown'
+                    employee_name: allWorkers?.find(w => w.employee_id === request.employee_id)?.employee_name || 'Unknown'
                 }));
 
                 return leaveRequestsWithNames;
@@ -405,17 +425,37 @@ export default function AdminDashboard() {
             // If we have leave requests, fetch worker details separately
             if (data && data.length > 0) {
                 const workerIds = [...new Set(data.map(request => request.employee_id))];
+                
+                // Try to fetch from worker_details first
                 const { data: workers, error: workersError } = await supabase
                     .from('worker_details')
                     .select('employee_id, employee_name')
                     .in('employee_id', workerIds);
+
+                // If some workers not found in worker_details, try local_worker_details
+                let allWorkers = workers || [];
+                if (workers && workers.length < workerIds.length) {
+                    const foundIds = new Set(workers.map(w => w.employee_id));
+                    const missingIds = workerIds.filter(id => !foundIds.has(id));
+                    
+                    if (missingIds.length > 0) {
+                        const { data: localWorkers, error: localError } = await supabase
+                            .from('local_worker_details')
+                            .select('employee_id, employee_name')
+                            .in('employee_id', missingIds);
+                        
+                        if (!localError && localWorkers) {
+                            allWorkers = [...allWorkers, ...localWorkers];
+                        }
+                    }
+                }
 
                 if (workersError) console.error('❌ Workers fetch error:', workersError);
 
                 // Merge data into leave requests
                 const leaveRequestsWithNames = data.map(request => ({
                     ...request,
-                    employee_name: workers?.find(w => w.employee_id === request.employee_id)?.employee_name || 'Unknown'
+                    employee_name: allWorkers?.find(w => w.employee_id === request.employee_id)?.employee_name || 'Unknown'
                 }));
 
                 return leaveRequestsWithNames;
@@ -491,14 +531,14 @@ export default function AdminDashboard() {
             if (leaveRequest.status === 'approved') {
                 const paidLeaveTypes = [
                     'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
-                    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+                    'Childcare Leave', 'Medical Leave', 'Hospitalization Leave', 'National Service (NS) Leave',
                     'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
                     'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
                     'Volunteer Leave'
                 ];
                 const isPaidLeave = paidLeaveTypes.includes(leaveRequest.leave_type);
                 const isAnnualLeave = leaveRequest.leave_type === 'Annual Leave';
-                const isMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
+                const isMedicalLeave = leaveRequest.leave_type === 'Medical Leave';
 
                 if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
                     log.info('💰 RESTORING LEAVE BALANCE - Worker:', leaveRequest.employee_id, 'Status:', leaveRequest.status);
@@ -517,12 +557,35 @@ export default function AdminDashboard() {
 
                     log.info('📅 Days to restore (weekdays only):', daysToRestore, 'for', leaveRequest.leave_type);
 
-                    // Get and update balance
-                    const { data: currentBalanceData, error: balanceError } = await supabase
+                    // Get and update balance - check both tables
+                    let currentBalanceData = null;
+                    let balanceError = null;
+                    let workerTable = 'worker_details';
+                    
+                    // Try worker_details first
+                    const { data: workerBalanceData, error: workerBalanceError } = await supabase
                         .from('worker_details')
                         .select(isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance')
                         .eq('employee_id', leaveRequest.employee_id)
                         .single();
+
+                    if (workerBalanceError) {
+                        // Try local_worker_details
+                        const { data: localBalanceData, error: localBalanceError } = await supabase
+                            .from('local_worker_details')
+                            .select(isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance')
+                            .eq('employee_id', leaveRequest.employee_id)
+                            .single();
+                        
+                        if (localBalanceError) {
+                            balanceError = localBalanceError;
+                        } else {
+                            currentBalanceData = localBalanceData;
+                            workerTable = 'local_worker_details';
+                        }
+                    } else {
+                        currentBalanceData = workerBalanceData;
+                    }
 
                     if (balanceError) throw balanceError;
 
@@ -534,7 +597,7 @@ export default function AdminDashboard() {
                     log.info('🔢 Balance calculation:', currentBalance, '+', daysToRestore, '=', newBalance);
 
                     const { error: updateError } = await supabase
-                        .from('worker_details')
+                        .from(workerTable)
                         .update({
                             [isAnnualLeave ? 'annual_leave_balance' : 'medical_leave_balance']: newBalance
                         })
@@ -699,7 +762,7 @@ export default function AdminDashboard() {
                 // Determine leave type categories
                 const paidLeaveTypes = [
                     'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
-                    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+                    'Childcare Leave', 'Medical Leave', 'Hospitalization Leave', 'National Service (NS) Leave',
                     'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
                     'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
                     'Volunteer Leave'
@@ -707,7 +770,7 @@ export default function AdminDashboard() {
                 const isPaidLeave = paidLeaveTypes.includes(leaveRequest.leave_type);
                 const isUnpaidLeave = leaveRequest.leave_type === 'Unpaid Leave' || leaveRequest.leave_type === 'Unpaid Infant Care Leave';
                 const isAnnualLeave = leaveRequest.leave_type === 'Annual Leave';
-                const isMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
+                const isMedicalLeave = leaveRequest.leave_type === 'Medical Leave';
 
                 log.info('Leave type:', leaveRequest.leave_type, 'Is paid:', isPaidLeave, 'Is unpaid:', isUnpaidLeave);
 
@@ -805,20 +868,44 @@ export default function AdminDashboard() {
 
                         // First, verify the worker exists and get current balance
                         log.info('🔍 LOOKING UP WORKER:', leaveRequest.employee_id);
-                        const { data: workerCheck, error: checkError } = await supabase
+                        
+                        // Try worker_details first, then local_worker_details
+                        let workerCheck = null;
+                        let checkError = null;
+                        let workerData = null; // Declare outside try block
+                        
+                        const { data: workerDataResult, error: workerDataError } = await supabase
                             .from('worker_details')
                             .select('employee_id, employee_name, annual_leave_balance, medical_leave_balance')
                             .eq('employee_id', leaveRequest.employee_id)
                             .single();
 
-                        if (checkError) {
+                        if (workerDataError) {
+                            // Try local_worker_details
+                            const { data: localWorkerData, error: localWorkerError } = await supabase
+                                .from('local_worker_details')
+                                .select('employee_id, employee_name, annual_leave_balance, medical_leave_balance')
+                                .eq('employee_id', leaveRequest.employee_id)
+                                .single();
+                            
+                            if (localWorkerError) {
+                                checkError = localWorkerError;
+                            } else {
+                                workerCheck = localWorkerData;
+                            }
+                        } else {
+                            workerCheck = workerDataResult;
+                            workerData = workerDataResult; // Store for later use
+                        }
+
+                        if (checkError || !workerCheck) {
                             console.error('❌ Worker lookup failed:', checkError);
                             console.error('❌ Error details:', {
-                                message: checkError.message,
-                                code: checkError.code,
-                                details: checkError.details
+                                message: checkError?.message || 'Worker not found',
+                                code: checkError?.code,
+                                details: checkError?.details
                             });
-                            throw new Error(`Worker lookup failed: ${checkError.message}`);
+                            throw new Error(`Worker lookup failed: ${checkError?.message || 'Worker not found'}`);
                         }
 
                         log.info('✅ Worker found:', workerCheck.employee_name, 'Current balances - AL:', workerCheck.annual_leave_balance, 'MC:', workerCheck.medical_leave_balance);
@@ -843,8 +930,11 @@ export default function AdminDashboard() {
 
                         // Perform the update
                         log.info('🔄 EXECUTING BALANCE UPDATE - Employee ID:', leaveRequest.employee_id, 'Update Data:', updateData);
+                        
+                        // Update the correct table based on where we found the worker
+                        const workerTable = workerData ? 'worker_details' : 'local_worker_details';
                         const { data: updateResult, error: updateError } = await supabase
-                            .from('worker_details')
+                            .from(workerTable)
                             .update(updateData)
                             .eq('employee_id', leaveRequest.employee_id);
 
@@ -1795,13 +1885,27 @@ export default function AdminDashboard() {
 
                 if (sitesError) console.error('❌ Sites fetch error:', sitesError);
 
-                const { data: allBreaks, error: breaksError } = await supabase
-                    .from('breaks')
-                    .select('*')
-                    .in('shift_id', shiftIds)
-                    .order('break_start', { ascending: true });
-
-                if (breaksError) console.error('❌ Breaks fetch error:', breaksError);
+                // Fetch breaks in batches to avoid URL length issues
+                const allBreaks = [];
+                const batchSize = 100; // Process 100 shift IDs at a time
+                
+                for (let i = 0; i < shiftIds.length; i += batchSize) {
+                    const batch = shiftIds.slice(i, i + batchSize);
+                    const { data: batchBreaks, error: batchError } = await supabase
+                        .from('breaks')
+                        .select('*')
+                        .in('shift_id', batch.length > 0 ? batch : [''])
+                        .order('break_start', { ascending: true });
+                    
+                    if (batchError) {
+                        console.error('❌ Breaks batch fetch error:', batchError);
+                        continue; // Continue with next batch even if one fails
+                    }
+                    
+                    if (batchBreaks) {
+                        allBreaks.push(...batchBreaks);
+                    }
+                }
 
                 const breaksByShiftId = {};
                 if (allBreaks) {
@@ -2990,11 +3094,22 @@ export default function AdminDashboard() {
                     .select('id, site_name')
                     .in('id', siteIds);
 
-                const { data: allBreaks } = await supabase
-                    .from('breaks')
-                    .select('*')
-                    .in('shift_id', shiftIds)
-                    .order('break_start', { ascending: true });
+                // Fetch breaks in batches to avoid URL length issues
+                const allBreaks = [];
+                const batchSize = 100; // Process 100 shift IDs at a time
+                
+                for (let i = 0; i < shiftIds.length; i += batchSize) {
+                    const batch = shiftIds.slice(i, i + batchSize);
+                    const { data: batchBreaks } = await supabase
+                        .from('breaks')
+                        .select('*')
+                        .in('shift_id', batch.length > 0 ? batch : [''])
+                        .order('break_start', { ascending: true });
+                    
+                    if (batchBreaks) {
+                        allBreaks.push(...batchBreaks);
+                    }
+                }
 
                 const breaksByShiftId = {};
                 if (allBreaks) {
@@ -3539,7 +3654,7 @@ export default function AdminDashboard() {
 
                 const paidLeaveTypes = [
                     'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
-                    'Childcare Leave', 'Sick Leave & Hospitalisation Leave', 'National Service (NS) Leave',
+                    'Childcare Leave', 'Medical Leave', 'Hospitalization Leave', 'National Service (NS) Leave',
                     'Adoption Leave', 'Non-Statutory Leave (Employer Provided)', 'Compassionate / Bereavement Leave',
                     'Marriage Leave', 'Study / Exam Leave', 'Birthday Leave', 'Mental Health Day',
                     'Volunteer Leave'
@@ -7851,9 +7966,8 @@ export default function AdminDashboard() {
                                     <SelectItem value="Paternity Leave">Paternity Leave</SelectItem>
                                     <SelectItem value="Shared Parental Leave">Shared Parental Leave</SelectItem>
                                     <SelectItem value="Childcare Leave">Childcare Leave</SelectItem>
-                                    <SelectItem value="Sick Leave & Hospitalisation Leave">
-                                        Sick Leave & Hospitalisation Leave
-                                    </SelectItem>
+                                    <SelectItem value="Medical Leave">Medical Leave</SelectItem>
+                                    <SelectItem value="Hospitalization Leave">Hospitalization Leave</SelectItem>
                                     <SelectItem value="National Service (NS) Leave">
                                         National Service (NS) Leave
                                     </SelectItem>
