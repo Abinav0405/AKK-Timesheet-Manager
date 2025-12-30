@@ -3026,17 +3026,11 @@ export default function AdminDashboard() {
                     // Don't add leave hours to actual worked hours
                     return;
                 } else if (shift.has_left) {
-                    // Work shifts: add to all hour categories
-                    const recalc = calculateShiftHours(
-                        shift.entry_time,
-                        shift.leave_time,
-                        shift.breaks || [],
-                        shift.work_date
-                    );
-                    monthlyBasicHours += recalc.basicHours;
-                    totalWorkedHours += recalc.basicHours; // Only actual worked hours
-                    monthlySundayHours += recalc.sundayHours;
-                    monthlyOtHours += recalc.otHours;
+                    // Work shifts: use database values directly
+                    monthlyBasicHours += shift.worked_hours || 0;
+                    totalWorkedHours += shift.worked_hours || 0; // Only actual worked hours
+                    monthlySundayHours += shift.sunday_hours || 0;
+                    monthlyOtHours += shift.ot_hours || 0;
                     totalOtHours = monthlyOtHours; // Ensure totalOtHours is set
                 }
             });
@@ -4950,27 +4944,18 @@ export default function AdminDashboard() {
                                                                                 <p>Exit: {shift.leave_time ? formatTime(shift.leave_time) : 'Not recorded'}</p>
                                                                             </div>
                                                                         </div>
-                                                                        {shift.has_left && (() => {
-                                                                            // Recalculate hours using the new logic for expanded details
-                                                                            const recalc = calculateShiftHours(
-                                                                                shift.entry_time,
-                                                                                shift.leave_time,
-                                                                                shift.breaks || [],
-                                                                                shift.work_date
-                                                                            );
-                                                                            return (
-                                                                                <div>
-                                                                                    <h4 className="font-medium text-slate-700 mb-2">Hours Breakdown</h4>
-                                                                                    <div className="space-y-1">
-                                                                                        <p>Basic Hours: {shift.worked_hours?.toFixed(2) || '0.00'}</p>
-                                                                                        <p>Sun/PH Hours: {shift.sunday_hours?.toFixed(2) || '0.00'}</p>
-                                                                                        <p>OT Hours: {shift.ot_hours?.toFixed(2) || '0.00'}</p>
-                                                                                        <p>Break Hours: {shift.break_hours?.toFixed(2) || '0.00'}</p>
+                                                                        {shift.has_left && (
+                                                                            <div>
+                                                                                <h4 className="font-medium text-slate-700 mb-2">Hours Breakdown</h4>
+                                                                                <div className="space-y-1">
+                                                                                        <p>Basic Hours: {(shift.worked_hours || 0).toFixed(2)}</p>
+                                                                                        <p>Sun/PH Hours: {(shift.sunday_hours || 0).toFixed(2)}</p>
+                                                                                        <p>OT Hours: {(shift.ot_hours || 0).toFixed(2)}</p>
+                                                                                        <p>Break Hours: {(shift.break_hours || 0).toFixed(2)}</p>
                                                                                         <p>Total Hours: {((shift.worked_hours || 0) + (shift.sunday_hours || 0) + (shift.ot_hours || 0)).toFixed(2)}</p>
-                                                                                    </div>
                                                                                 </div>
-                                                                            );
-                                                                        })()}
+                                                                            </div>
+                                                                        )}
                                                                     </div>
                                                                 </div>
                                                             )}
