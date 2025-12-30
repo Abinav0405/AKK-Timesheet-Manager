@@ -2805,14 +2805,14 @@ export default function AdminDashboard() {
             'Worker ID': s.worker_id,
             'Site': s.sites?.site_name || 'Unknown',
             'Entry Time': s.entry_time ? formatTime(s.entry_time) : '',
-            'Breaks': (s.breaks && s.breaks.length > 0)
-                ? s.breaks
-                    .map((b, i) => `Break ${i + 1}: ${b.break_start ? formatTime(b.break_start) : ''}${b.break_end ? ` - ${formatTime(b.break_end)}` : ''}`)
-                    .join(' | ')
-                : '',
-            'Break Hours': (s.entry_time && s.leave_time)
-                ? calculateShiftHours(s.entry_time, s.leave_time, s.breaks || [], s.work_date).breakHours
-                : 0,
+            'Breaks': (s.break_hours && s.break_hours > 0)
+                ? `${s.break_hours.toFixed(1)} hrs`
+                : (s.breaks && s.breaks.length > 0)
+                    ? s.breaks
+                        .map((b, i) => `Break ${i + 1}: ${b.break_start ? formatTime(b.break_start) : ''}${b.break_end ? ` - ${formatTime(b.break_end)}` : ''}`)
+                        .join(' | ')
+                    : '',
+            'Break Hours': s.break_hours || 0,
             'Exit Time': s.leave_time ? formatTime(s.leave_time) : '',
             'Worked Hours': s.worked_hours || 0,
             'Sunday Hours': s.sunday_hours || 0,
@@ -4903,19 +4903,19 @@ export default function AdminDashboard() {
                                                                             return (
                                                                                 <div className="flex items-center gap-4 text-sm">
                                                                                     <span className="text-green-600 font-medium">
-                                                                                        Basic: {recalc.basicHours.toFixed(2)}h
+                                                                                        Basic: {(shift.worked_hours || 0).toFixed(2)}h
                                                                                     </span>
                                                                                     <span className="text-slate-600 font-medium">
-                                                                                        Break: {recalc.breakHours.toFixed(2)}h
+                                                                                        Break: {(shift.break_hours || 0).toFixed(2)}h
                                                                                     </span>
-                                                                                    {recalc.sundayHours > 0 && (
+                                                                                    {(shift.sunday_hours || 0) > 0 && (
                                                                                         <span className="text-orange-600 font-medium">
-                                                                                            Sun/PH: {recalc.sundayHours.toFixed(2)}h
+                                                                                            Sun/PH: {(shift.sunday_hours || 0).toFixed(2)}h
                                                                                         </span>
                                                                                     )}
-                                                                                    {recalc.otHours > 0 && (
+                                                                                    {(shift.ot_hours || 0) > 0 && (
                                                                                         <span className="text-blue-600 font-medium">
-                                                                                            OT: {recalc.otHours.toFixed(2)}h
+                                                                                            OT: {(shift.ot_hours || 0).toFixed(2)}h
                                                                                         </span>
                                                                                     )}
                                                                                 </div>
@@ -4933,13 +4933,20 @@ export default function AdminDashboard() {
                                                                             <h4 className="font-medium text-slate-700 mb-2">Time Details</h4>
                                                                             <div className="space-y-1">
                                                                                 <p>Entry: {shift.entry_time ? formatTime(shift.entry_time) : 'Not recorded'}</p>
-                                                                                {shift.breaks && shift.breaks.length > 0 && shift.breaks.map((breakItem, index) => (
-                                                                                    <p key={breakItem.id || `${shift.id}-break-${index}`} className="flex items-center gap-1">
+                                                                                {shift.break_hours && shift.break_hours > 0 ? (
+                                                                                    <p className="flex items-center gap-1">
                                                                                         <Coffee className="w-3 h-3" />
-                                                                                        Break {index + 1}: {formatTime(breakItem.break_start)}
-                                                                                        {breakItem.break_end ? ` - ${formatTime(breakItem.break_end)}` : ' (Ongoing)'}
+                                                                                        Break Hours: {shift.break_hours.toFixed(1)} hrs
                                                                                     </p>
-                                                                                ))}
+                                                                                ) : (
+                                                                                    shift.breaks && shift.breaks.length > 0 && shift.breaks.map((breakItem, index) => (
+                                                                                        <p key={breakItem.id || `${shift.id}-break-${index}`} className="flex items-center gap-1">
+                                                                                            <Coffee className="w-3 h-3" />
+                                                                                            Break {index + 1}: {formatTime(breakItem.break_start)}
+                                                                                            {breakItem.break_end ? ` - ${formatTime(breakItem.break_end)}` : ' (Ongoing)'}
+                                                                                        </p>
+                                                                                    ))
+                                                                                )}
                                                                                 <p>Exit: {shift.leave_time ? formatTime(shift.leave_time) : 'Not recorded'}</p>
                                                                             </div>
                                                                         </div>
@@ -4955,11 +4962,11 @@ export default function AdminDashboard() {
                                                                                 <div>
                                                                                     <h4 className="font-medium text-slate-700 mb-2">Hours Breakdown</h4>
                                                                                     <div className="space-y-1">
-                                                                                        <p>Basic Hours: {recalc.basicHours.toFixed(2)}</p>
-                                                                                        <p>Sun/PH Hours: {recalc.sundayHours.toFixed(2)}</p>
-                                                                                        <p>OT Hours: {recalc.otHours.toFixed(2)}</p>
-                                                                                        <p>Break Hours: {recalc.breakHours.toFixed(2)}</p>
-                                                                                        <p>Total Hours: {(recalc.basicHours + recalc.sundayHours + recalc.otHours).toFixed(2)}</p>
+                                                                                        <p>Basic Hours: {shift.worked_hours?.toFixed(2) || '0.00'}</p>
+                                                                                        <p>Sun/PH Hours: {shift.sunday_hours?.toFixed(2) || '0.00'}</p>
+                                                                                        <p>OT Hours: {shift.ot_hours?.toFixed(2) || '0.00'}</p>
+                                                                                        <p>Break Hours: {shift.break_hours?.toFixed(2) || '0.00'}</p>
+                                                                                        <p>Total Hours: {((shift.worked_hours || 0) + (shift.sunday_hours || 0) + (shift.ot_hours || 0)).toFixed(2)}</p>
                                                                                     </div>
                                                                                 </div>
                                                                             );
