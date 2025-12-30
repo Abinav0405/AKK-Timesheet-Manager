@@ -1,0 +1,35 @@
+-- SQL script to insert shift data for worker 1009 for November 2025
+-- Assuming timezone is Asia/Singapore (UTC+8)
+-- Lunch breaks are calculated as starting 4 hours after entry_time and lasting for break_hours duration
+
+INSERT INTO shifts (worker_id, site_id, work_date, entry_time, leave_time, lunch_start, lunch_end, break_hours, has_left) VALUES
+('1009', NULL, '2025-11-01', '2025-11-01 21:00:00+08'::timestamptz, '2025-11-02 08:00:00+08'::timestamptz, '2025-11-02 01:00:00+08'::timestamptz, '2025-11-02 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-02', '2025-11-02 23:00:00+08'::timestamptz, '2025-11-03 08:00:00+08'::timestamptz, '2025-11-03 03:00:00+08'::timestamptz, '2025-11-03 04:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-03', '2025-11-03 21:00:00+08'::timestamptz, '2025-11-04 08:00:00+08'::timestamptz, '2025-11-04 01:00:00+08'::timestamptz, '2025-11-04 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-04', '2025-11-04 21:00:00+08'::timestamptz, '2025-11-05 08:00:00+08'::timestamptz, '2025-11-05 01:00:00+08'::timestamptz, '2025-11-05 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-05', '2025-11-05 21:00:00+08'::timestamptz, '2025-11-06 08:00:00+08'::timestamptz, '2025-11-06 01:00:00+08'::timestamptz, '2025-11-06 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-06', '2025-11-06 21:00:00+08'::timestamptz, '2025-11-07 08:00:00+08'::timestamptz, '2025-11-07 01:00:00+08'::timestamptz, '2025-11-07 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-07', '2025-11-07 21:00:00+08'::timestamptz, '2025-11-08 08:00:00+08'::timestamptz, '2025-11-08 01:00:00+08'::timestamptz, '2025-11-08 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-08', '2025-11-08 21:00:00+08'::timestamptz, '2025-11-09 08:00:00+08'::timestamptz, '2025-11-09 01:00:00+08'::timestamptz, '2025-11-09 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-09', '2025-11-09 23:00:00+08'::timestamptz, '2025-11-10 08:00:00+08'::timestamptz, '2025-11-10 03:00:00+08'::timestamptz, '2025-11-10 04:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-10', '2025-11-10 21:00:00+08'::timestamptz, '2025-11-11 08:00:00+08'::timestamptz, '2025-11-11 01:00:00+08'::timestamptz, '2025-11-11 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-11', '2025-11-11 21:00:00+08'::timestamptz, '2025-11-12 08:00:00+08'::timestamptz, '2025-11-12 01:00:00+08'::timestamptz, '2025-11-12 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-12', '2025-11-12 21:00:00+08'::timestamptz, '2025-11-13 08:00:00+08'::timestamptz, '2025-11-13 01:00:00+08'::timestamptz, '2025-11-13 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-13', '2025-11-13 21:00:00+08'::timestamptz, '2025-11-14 08:00:00+08'::timestamptz, '2025-11-14 01:00:00+08'::timestamptz, '2025-11-14 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-14', '2025-11-14 21:00:00+08'::timestamptz, '2025-11-15 08:00:00+08'::timestamptz, '2025-11-15 01:00:00+08'::timestamptz, '2025-11-15 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-15', '2025-11-15 21:00:00+08'::timestamptz, '2025-11-16 08:00:00+08'::timestamptz, '2025-11-16 01:00:00+08'::timestamptz, '2025-11-16 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-16', '2025-11-16 21:00:00+08'::timestamptz, '2025-11-17 08:00:00+08'::timestamptz, '2025-11-17 01:00:00+08'::timestamptz, '2025-11-17 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-17', '2025-11-17 21:00:00+08'::timestamptz, '2025-11-18 08:00:00+08'::timestamptz, '2025-11-18 01:00:00+08'::timestamptz, '2025-11-18 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-18', '2025-11-18 21:00:00+08'::timestamptz, '2025-11-19 08:00:00+08'::timestamptz, '2025-11-19 01:00:00+08'::timestamptz, '2025-11-19 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-19', '2025-11-19 00:00:00+08'::timestamptz, '2025-11-19 08:00:00+08'::timestamptz, '2025-11-19 04:00:00+08'::timestamptz, '2025-11-19 04:00:00+08'::timestamptz, 0.0, true),
+('1009', NULL, '2025-11-20', '2025-11-20 21:00:00+08'::timestamptz, '2025-11-21 08:00:00+08'::timestamptz, '2025-11-21 01:00:00+08'::timestamptz, '2025-11-21 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-21', '2025-11-21 21:00:00+08'::timestamptz, '2025-11-22 08:00:00+08'::timestamptz, '2025-11-22 01:00:00+08'::timestamptz, '2025-11-22 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-22', '2025-11-22 21:00:00+08'::timestamptz, '2025-11-23 09:00:00+08'::timestamptz, '2025-11-23 01:00:00+08'::timestamptz, '2025-11-23 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-23', '2025-11-23 21:00:00+08'::timestamptz, '2025-11-24 09:00:00+08'::timestamptz, '2025-11-24 01:00:00+08'::timestamptz, '2025-11-24 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-24', '2025-11-24 21:00:00+08'::timestamptz, '2025-11-25 09:00:00+08'::timestamptz, '2025-11-25 01:00:00+08'::timestamptz, '2025-11-25 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-25', '2025-11-25 21:00:00+08'::timestamptz, '2025-11-26 08:00:00+08'::timestamptz, '2025-11-26 01:00:00+08'::timestamptz, '2025-11-26 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-26', '2025-11-26 21:00:00+08'::timestamptz, '2025-11-27 08:00:00+08'::timestamptz, '2025-11-27 01:00:00+08'::timestamptz, '2025-11-27 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-27', '2025-11-27 21:00:00+08'::timestamptz, '2025-11-28 08:00:00+08'::timestamptz, '2025-11-28 01:00:00+08'::timestamptz, '2025-11-28 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-28', '2025-11-28 21:00:00+08'::timestamptz, '2025-11-29 08:00:00+08'::timestamptz, '2025-11-29 01:00:00+08'::timestamptz, '2025-11-29 02:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-29', '2025-11-29 20:00:00+08'::timestamptz, '2025-11-30 08:00:00+08'::timestamptz, '2025-11-30 00:00:00+08'::timestamptz, '2025-11-30 01:00:00+08'::timestamptz, 1.0, true),
+('1009', NULL, '2025-11-30', '2025-11-30 20:00:00+08'::timestamptz, '2025-12-01 08:00:00+08'::timestamptz, '2025-12-01 00:00:00+08'::timestamptz, '2025-12-01 01:00:00+08'::timestamptz, 1.0, true);
