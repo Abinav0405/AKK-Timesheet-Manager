@@ -1,20 +1,42 @@
-import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, Link, useLocation } from "react-router-dom";
 import { createPageUrl } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/Components/ui/card";
 import { Button } from "@/Components/ui/button";
 import { Input } from "@/Components/ui/input";
-import { User, UserCheck, ArrowLeft, Loader2, Lock } from "lucide-react";
+import { User, UserCheck, ArrowLeft, Loader2, Lock, Briefcase } from "lucide-react";
 import { motion } from "framer-motion";
 import { supabase } from "@/supabase";
-import bcrypt from 'bcryptjs';
 import { toast } from "sonner";
 
 export default function WorkerLogin() {
     const [workerId, setWorkerId] = useState("");
     const [password, setPassword] = useState("");
     const [isLoading, setIsLoading] = useState(false);
+    const [workerType, setWorkerType] = useState('foreign'); // Default to foreign worker
     const navigate = useNavigate();
+    const location = useLocation();
+
+    // Set worker type from URL params if available
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const type = params.get('type');
+        if (type === 'local' || type === 'foreign') {
+            setWorkerType(type);
+        } else {
+            // Default to foreign worker if no type is specified
+            setWorkerType('foreign');
+        }
+    }, [location]);
+    
+    // Update the URL when worker type changes
+    useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        if (workerType) {
+            params.set('type', workerType);
+            window.history.replaceState({}, '', `${location.pathname}?${params.toString()}`);
+        }
+    }, [workerType, location]);
 
     const handleLogin = async (e) => {
         e.preventDefault();
@@ -27,21 +49,36 @@ export default function WorkerLogin() {
                 return;
             }
 
-            // Fetch worker from database
+            const tableName = workerType === 'local' ? 'local_worker_details' : 'worker_details';
+            const idField = workerType === 'local' ? 'employee_id' : 'employee_id';
+            
+            console.log(`Attempting login for ${workerType} worker with ID:`, workerId.trim());
+            
+            // Fetch worker from the appropriate table
             const { data: worker, error } = await supabase
-                .from('workers')
+                .from(tableName)
                 .select('*')
-                .eq('worker_id', workerId.trim())
+                .eq(idField, workerId.trim())
                 .single();
 
+            console.log('Worker data from database:', worker);
+            console.log('Error from query:', error);
+
             if (error || !worker) {
+                console.error('Error fetching worker or worker not found:', error);
                 toast.error("Invalid Worker ID or Password");
                 setIsLoading(false);
                 return;
             }
 
-            // Verify password (plain text for testing)
-            if (password !== worker.password_hash) {
+            // Verify password (plain text comparison)
+            const passwordField = workerType === 'local' ? 'password_hash' : 'password_hash';
+            console.log('Password field being checked:', passwordField);
+            console.log('Entered password:', password);
+            console.log('Stored password:', worker[passwordField]);
+            
+            if (password !== worker[passwordField]) {
+                console.error('Password mismatch');
                 toast.error("Invalid Worker ID or Password");
                 setIsLoading(false);
                 return;
@@ -49,10 +86,11 @@ export default function WorkerLogin() {
 
             // Store worker info in sessionStorage
             sessionStorage.setItem('workerLoggedIn', 'true');
-            sessionStorage.setItem('workerName', worker.name);
-            sessionStorage.setItem('workerId', worker.worker_id);
+            sessionStorage.setItem('workerName', worker.employee_name || worker.name);
+            sessionStorage.setItem('workerId', worker.employee_id || worker.id);
+            sessionStorage.setItem('workerType', workerType);
 
-            toast.success(`Welcome back, ${worker.name}!`);
+            toast.success(`Welcome back, ${worker.employee_name || worker.name}!`);
             setIsLoading(false);
             navigate(createPageUrl('WorkerPortal'));
         } catch (error) {
@@ -60,6 +98,14 @@ export default function WorkerLogin() {
             toast.error("An error occurred during login");
             setIsLoading(false);
         }
+    };
+
+    const toggleWorkerType = () => {
+        const newType = workerType === 'local' ? 'foreign' : 'local';
+        setWorkerType(newType);
+        // Clear the form when toggling
+        setWorkerId('');
+        setPassword('');
     };
 
     return (
@@ -81,6 +127,26 @@ export default function WorkerLogin() {
                     </Button>
                 </Link>
 
+                {/* Worker Type Toggle */}
+                <div className="flex justify-center mb-4">
+                    <div className="inline-flex bg-white rounded-lg shadow-md overflow-hidden">
+                        <button
+                            onClick={() => setWorkerType('foreign')}
+                            className={`px-6 py-2 font-medium text-sm ${workerType === 'foreign' ? 'bg-orange-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                        >
+                            <Briefcase className="inline-block w-4 h-4 mr-2" />
+                            Foreign Worker
+                        </button>
+                        <button
+                            onClick={() => setWorkerType('local')}
+                            className={`px-6 py-2 font-medium text-sm ${workerType === 'local' ? 'bg-orange-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                        >
+                            <User className="inline-block w-4 h-4 mr-2" />
+                            Local Worker
+                        </button>
+                    </div>
+                </div>
+
                 {/* Login Card */}
                 <Card className="border-0 shadow-2xl overflow-hidden">
                     {/* Header Section */}
@@ -97,10 +163,10 @@ export default function WorkerLogin() {
                         </div>
                         <CardHeader className="p-0 text-center">
                             <CardTitle className="text-3xl font-bold mb-2">
-                                Worker Portal
+                                {workerType === 'local' ? 'Local Worker' : 'Foreign Worker'} Login
                             </CardTitle>
                             <CardDescription className="text-orange-100 text-base">
-                                Access your time tracking dashboard
+                                Sign in to your {workerType} account
                             </CardDescription>
                         </CardHeader>
                     </div>

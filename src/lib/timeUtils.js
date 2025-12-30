@@ -68,18 +68,19 @@ export function getNormalWorkEndTime(date) {
 }
 
 /**
- * Calculate worked hours, OT hours, and sunday hours according to the rules
+ * Calculate worked hours, OT hours, and sunday hours according to the new rules
+ * Supports both old lunch_start/lunch_end format and new breaks array format
  */
-export function calculateShiftHours(entryTime, leaveTime, lunchStart, lunchEnd, workDate) {
+export function calculateShiftHours(entryTime, leaveTime, breaksOrLunchStart = [], workDate, lunchEnd = null) {
     if (!entryTime || !leaveTime) {
         return {
-            workedHours: 0,
+            basicHours: 0,
             sundayHours: 0,
             otHours: 0,
-            totalMinutes: 0,
-            lunchMinutes: 0,
-            otMinutes: 0,
-            workedMinutes: 0
+            totalDuration: 0,
+            netWorkedHours: 0,
+            breakHours: 0,
+            basicDay: 0
         };
     }
 
@@ -87,74 +88,66 @@ export function calculateShiftHours(entryTime, leaveTime, lunchStart, lunchEnd, 
     const isSunday = date.getDay() === 0;
     const isHoliday = isPublicHoliday(date);
 
-    // Calculate total time
-    let totalMinutes = calculateMinutes(entryTime, leaveTime);
+    // Calculate total duration from entry to leave (supports overnight)
+    const totalDuration = calculateHours(entryTime, leaveTime);
 
-    // Calculate lunch time (exclude from all calculations)
-    let lunchMinutes = 0;
-    if (lunchStart && lunchEnd) {
-        lunchMinutes = calculateMinutes(lunchStart, lunchEnd);
-    }
+    // Calculate total break hours - handle both old and new formats
+    let totalBreakHours = 0;
 
-    // Calculate actual worked time (total - lunch)
-    let workedMinutes = totalMinutes - lunchMinutes;
-
-    // Calculate OT (time after 5:00 PM)
-    const normalEndTime = getNormalWorkEndTime(date);
-    const leaveDateTime = new Date(leaveTime);
-
-    let otMinutes = 0;
-    if (leaveDateTime > normalEndTime) {
-        // Calculate OT from 5:00 PM to leave time, but exclude lunch time that falls within OT period
-        const otStart = new Date(Math.max(new Date(entryTime), normalEndTime));
-        let otEnd = leaveDateTime;
-
-        // If lunch overlaps with OT period, subtract lunch time from OT
-        if (lunchStart && lunchEnd) {
-            const lunchStartTime = new Date(lunchStart);
-            const lunchEndTime = new Date(lunchEnd);
-
-            if (lunchStartTime < otEnd && lunchEndTime > otStart) {
-                const lunchOverlapStart = new Date(Math.max(lunchStartTime, otStart));
-                const lunchOverlapEnd = new Date(Math.min(lunchEndTime, otEnd));
-                const lunchOverlapMinutes = calculateMinutes(lunchOverlapStart, lunchOverlapEnd);
-                otMinutes = calculateMinutes(otStart, otEnd) - lunchOverlapMinutes;
-            } else {
-                otMinutes = calculateMinutes(otStart, otEnd);
-            }
-        } else {
-            otMinutes = calculateMinutes(otStart, otEnd);
+    // Check if it's the old format (lunch_start as string, lunch_end as parameter)
+    if (typeof breaksOrLunchStart === 'string' && lunchEnd) {
+        // Old format: lunch_start and lunch_end as separate parameters
+        if (breaksOrLunchStart && lunchEnd) {
+            totalBreakHours = calculateHours(breaksOrLunchStart, lunchEnd);
         }
+    } else if (breaksOrLunchStart && Array.isArray(breaksOrLunchStart) && breaksOrLunchStart.length > 0) {
+        // New format: breaks as array
+        breaksOrLunchStart.forEach(breakItem => {
+            if (breakItem.break_start && breakItem.break_end) {
+                totalBreakHours += calculateHours(breakItem.break_start, breakItem.break_end);
+            }
+        });
     }
 
-    // Adjust worked minutes (worked time should not include OT time)
-    workedMinutes = workedMinutes - otMinutes;
+    // Calculate net worked hours (total duration minus all breaks)
+    const netWorkedHours = Math.max(0, totalDuration - totalBreakHours);
 
-    // Sunday logic: if it's Sunday, all worked hours become sunday hours
-    let workedHours = 0;
+    let basicHours = 0;
+    let otHours = 0;
     let sundayHours = 0;
-    let otHours = otMinutes / 60;
+    let basicDay = 0;
 
-    if (isSunday) {
-        sundayHours = workedMinutes / 60;
-        // OT on Sunday still counts as OT (not double)
+    if (isSunday || isHoliday) {
+        // All net worked hours go to Sunday/PH hours
+        sundayHours = netWorkedHours;
+        basicHours = 0;
+        otHours = 0;
+        basicDay = 0;
     } else {
-        workedHours = workedMinutes / 60;
+        // Basic hours capped at 8, OT is remaining hours
+        basicHours = Math.min(8, netWorkedHours);
+        otHours = Math.max(0, netWorkedHours - 8);
+        sundayHours = 0;
+        basicDay = basicHours / 8;
     }
 
     // Round to 2 decimal places
-    workedHours = Math.round(workedHours * 100) / 100;
-    sundayHours = Math.round(sundayHours * 100) / 100;
-    otHours = Math.round(otHours * 100) / 100;
+    const roundedBasicHours = Math.round(basicHours * 100) / 100;
+    const roundedSundayHours = Math.round(sundayHours * 100) / 100;
+    const roundedOtHours = Math.round(otHours * 100) / 100;
+    const roundedTotalDuration = Math.round(totalDuration * 100) / 100;
+    const roundedNetWorkedHours = Math.round(netWorkedHours * 100) / 100;
+    const roundedBreakHours = Math.round(totalBreakHours * 100) / 100;
+    const roundedBasicDay = Math.round(basicDay * 100) / 100;
 
     return {
-        workedHours,
-        sundayHours,
-        otHours,
-        totalMinutes,
-        lunchMinutes,
-        otMinutes,
-        workedMinutes
+        basicHours: roundedBasicHours,
+        sundayHours: roundedSundayHours,
+        otHours: roundedOtHours,
+        totalDuration: roundedTotalDuration,
+        netWorkedHours: roundedNetWorkedHours,
+        breakHours: roundedBreakHours,
+        basicDay: roundedBasicDay
     };
 }
 
@@ -177,16 +170,17 @@ export function calculateDistance(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Format time for display (HH:mm)
+ * Format time for display (HH:mm) in 24-hour format
  */
 export function formatTime(dateTime) {
     if (!dateTime) return '';
     const date = new Date(dateTime);
-    return date.toLocaleTimeString('en-SG', {
+    return new Intl.DateTimeFormat('en-SG', {
         hour: '2-digit',
         minute: '2-digit',
-        hour12: false
-    });
+        hour12: false,
+        timeZone: 'Asia/Singapore'
+    }).format(date);
 }
 
 /**
@@ -198,7 +192,8 @@ export function formatDate(date) {
     return d.toLocaleDateString('en-SG', {
         day: '2-digit',
         month: '2-digit',
-        year: 'numeric'
+        year: 'numeric',
+        timeZone: 'Asia/Singapore'
     });
 }
 

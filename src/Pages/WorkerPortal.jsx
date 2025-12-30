@@ -2,26 +2,124 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/Components/ui/card";
 import { Button } from "@/Components/ui/button";
 import { Badge } from "@/Components/ui/badge";
+import { Input } from "@/Components/ui/input";
+import { Textarea } from "@/Components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectGroup, SelectLabel } from "@/Components/ui/select";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/Components/ui/dialog";
 import {
     Clock, LogIn, Coffee, LogOut, History, ArrowLeft,
-    MapPin, Calendar, User, CheckCircle, AlertCircle
+    MapPin, Calendar, User, CheckCircle, AlertCircle, FileText, Loader2, Download
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link } from "react-router-dom";
 import { createPageUrl } from "@/lib/utils";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/supabase";
 import QRScanner from "@/Components/QRScanner";
 import { formatTime, formatDate, calculateShiftHours } from "@/lib/timeUtils";
+import { format } from "date-fns";
 import { toast } from "sonner";
 
 export default function WorkerPortal() {
-    const [activeScan, setActiveScan] = useState(null); // 'entry', 'lunch', 'leave'
+    const [activeScan, setActiveScan] = useState(null); // 'entry', 'breaks', 'leave'
     const [currentShift, setCurrentShift] = useState(null);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [showLeaveRequestDialog, setShowLeaveRequestDialog] = useState(false);
+    const [showPayslipDialog, setShowPayslipDialog] = useState(false);
+    const [leaveRequestData, setLeaveRequestData] = useState({
+        leave_type: '',
+        leave_duration: 'full_day',
+        from_date: '',
+        to_date: '',
+        reason: ''
+    });
 
     const workerId = sessionStorage.getItem('workerId');
     const workerName = sessionStorage.getItem('workerName');
+
+    // Fetch worker's leave history
+    const { data: workerLeaveRequests = [], isLoading: isLoadingLeaveHistory } = useQuery({
+        queryKey: ['workerLeaveHistory', workerId],
+        queryFn: async () => {
+            if (!workerId) return [];
+
+            const { data, error } = await supabase
+                .from('leave_requests')
+                .select('*')
+                .eq('employee_id', workerId)
+                .order('created_at', { ascending: false });
+
+            if (error) throw error;
+            return data || [];
+        },
+        enabled: !!workerId
+    });
+
+    const workerType = sessionStorage.getItem('workerType') || 'foreign';
+    const workerTable = workerType === 'local' ? 'local_worker_details' : 'worker_details';
+    const idField = workerType === 'local' ? 'employee_id' : 'employee_id';
+    const queryClient = useQueryClient();
+
+    // Fetch worker's leave balances
+    const { data: workerBalance, isLoading: isLoadingBalance } = useQuery({
+        queryKey: ['workerBalance', workerId, workerType],
+        queryFn: async () => {
+            if (!workerId) return null;
+
+            const { data, error } = await supabase
+                .from(workerTable)
+                .select('annual_leave_balance, medical_leave_balance')
+                .eq(idField, workerId)
+                .single();
+
+            if (error) {
+                console.error('Error fetching worker balance:', error);
+                // Return default values if there's an error
+                return { annual_leave_balance: 0, medical_leave_balance: 0 };
+            }
+            
+            // Handle case where data might be null
+            if (!data) {
+                return { annual_leave_balance: 0, medical_leave_balance: 0 };
+            }
+            
+            return data;
+        },
+        enabled: !!workerId,
+        // Provide default values while loading
+        placeholderData: { annual_leave_balance: 0, medical_leave_balance: 0 }
+    });
+
+    const {
+        data: workerPayslips = [],
+        isLoading: isLoadingPayslips
+    } = useQuery({
+        queryKey: ['workerPayslips', workerId],
+        queryFn: async () => {
+            if (!workerId) return [];
+
+            const { data, error } = await supabase
+                .from('payslip_history')
+                .select('*')
+                .eq('worker_id', workerId)
+                .order('payslip_month', { ascending: false });
+
+            if (error) {
+                console.error('Error fetching worker payslips:', error);
+                throw error;
+            }
+
+            return data || [];
+        },
+        enabled: !!workerId
+    });
 
     // Check authentication on component mount
     useEffect(() => {
@@ -31,129 +129,189 @@ export default function WorkerPortal() {
         }
     }, []);
 
-    // Fetch current shift (today's shift)
-    const { data: todaysShift, refetch: refetchShift, isLoading: isLoadingShift } = useQuery({
+    // Fetch current shift (today's shifts)
+    const { data: todaysShifts, refetch: refetchShift, isLoading: isLoadingShift } = useQuery({
         queryKey: ['currentShift', workerId],
         queryFn: async () => {
-            if (!workerId) return null;
+            if (!workerId) return [];
 
             const today = new Date().toISOString().split('T')[0];
-            console.log('Fetching todays shift for worker:', workerId, 'date:', today);
+            console.log('Fetching todays shifts for worker:', workerId, 'date:', today);
 
             const { data, error } = await supabase
                 .from('shifts')
                 .select('*')
                 .eq('worker_id', workerId)
                 .eq('work_date', today)
-                .single();
+                .order('created_at', { ascending: false });
 
-            // If we have a shift, fetch site data separately
-            if (data) {
-                const { data: siteData } = await supabase
-                    .from('sites')
-                    .select('id, site_name, latitude, longitude')
-                    .eq('id', data.site_id)
-                    .single();
-
-                if (siteData) {
-                    data.sites = siteData;
-                }
-            }
-
-            if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
-                console.error('Error fetching todays shift:', error);
+            if (error) {
+                console.error('Error fetching todays shifts:', error);
                 throw error;
             }
 
-            console.log('Todays shift data:', data);
-            return data || null;
+            // If we have shifts, fetch site data separately for each
+            if (data && data.length > 0) {
+                const siteIds = [...new Set(data.map(shift => shift.site_id))];
+                const { data: sites } = await supabase
+                    .from('sites')
+                    .select('id, site_name, latitude, longitude')
+                    .in('id', siteIds);
+
+                // Merge site data into shifts
+                data.forEach(shift => {
+                    shift.sites = sites?.find(s => s.id === shift.site_id) || null;
+                });
+            }
+
+            console.log('Todays shifts data:', data);
+            return data || [];
         },
         refetchInterval: 5000, // Refresh every 5 seconds
         enabled: !!workerId
     });
 
     useEffect(() => {
-        if (todaysShift) {
-            setCurrentShift(todaysShift);
+        if (todaysShifts && todaysShifts.length > 0) {
+            // Get the most recent active shift (not completed)
+            const activeShift = todaysShifts.find(shift => !shift.has_left) || todaysShifts[0];
+            setCurrentShift(activeShift);
+        } else {
+            setCurrentShift(null);
         }
-    }, [todaysShift]);
+    }, [todaysShifts]);
 
     const handleScanSuccess = async (site, qrToken) => {
-        console.log('Scan success - site:', site, 'qrToken:', qrToken, 'action:', activeScan);
-        if (!workerId || !site) return;
+        console.log('Scan success - site:', site, 'qrToken:', qrToken, 'action:', activeScan, 'workerType:', workerType);
+        if (!workerId || !site) {
+            toast.error("Invalid site or missing worker information");
+            return;
+        }
 
         setIsProcessing(true);
 
         try {
             const now = new Date().toISOString();
             const today = new Date().toISOString().split('T')[0];
+            
+            // Handle both string and numeric IDs
+            const workerIdValue = workerType === 'local' ? workerId : parseInt(workerId, 10);
+            // Use 'worker_id' as the column name in the shifts table
+            const workerIdField = 'worker_id';
 
             if (activeScan === 'entry') {
-                // Check if already clocked in today
-                if (currentShift && currentShift.entry_time) {
-                    toast.error("Already clocked in today");
+                // First, check if there's an existing active shift
+                console.log('Checking for existing shifts with:', { workerIdField, workerIdValue, today });
+                const { data: existingShift, error: shiftError } = await supabase
+                    .from('shifts')
+                    .select('*')
+                    .eq(workerIdField, workerIdValue)
+                    .eq('has_left', false)
+                    .eq('work_date', today)
+                    .maybeSingle();
+
+                if (shiftError) {
+                    console.error('Error checking for existing shifts:', shiftError);
+                    throw shiftError;
+                }
+                console.log('Existing shift check result:', existingShift);
+
+                if (existingShift) {
+                    toast.error("You already have an active shift");
                     setIsProcessing(false);
+                    setActiveScan(null);
                     return;
                 }
 
                 // Create new shift record
+                const shiftData = {
+                    [workerIdField]: workerIdValue,
+                    site_id: site.id,
+                    work_date: today,
+                    entry_time: now,
+                    has_left: false,
+                    // Removed worker_type as it's not in the schema
+                    created_at: now
+                };
+                
+                console.log('Creating shift with data:', shiftData);
+                
                 const { data, error } = await supabase
                     .from('shifts')
-                    .insert([{
-                        worker_id: workerId,
-                        site_id: site.id,
-                        work_date: today,
-                        entry_time: now,
-                        has_left: false
-                    }])
+                    .insert([shiftData])
                     .select()
                     .single();
 
-                if (error) throw error;
+                if (error) {
+                    console.error('Error creating shift:', error);
+                    if (error.code === '23505') { // Unique violation
+                        throw new Error('You already have an active shift');
+                    } else if (error.code === '23503') { // Foreign key violation
+                        throw new Error('Invalid site or worker information');
+                    } else {
+                        throw new Error(error.message || 'Failed to record shift');
+                    }
+                }
+
+                // Fetch the created shift with site details
+                const { data: shiftWithSite } = await supabase
+                    .from('shifts')
+                    .select('*, sites(*)')
+                    .eq('id', data.id)
+                    .single();
 
                 toast.success("Clocked in successfully!");
-                setCurrentShift(data);
+                setCurrentShift(shiftWithSite);
                 refetchShift();
 
-            } else if (activeScan === 'lunch') {
+            } else if (activeScan === 'breaks') {
                 if (!currentShift || !currentShift.entry_time) {
                     toast.error("Must clock in first");
                     setIsProcessing(false);
                     return;
                 }
+                
+                // Verify the worker is at the same site as their current shift
+                if (currentShift.site_id !== site.id) {
+                    toast.error("Must be at the same site as your current shift");
+                    setIsProcessing(false);
+                    return;
+                }
 
-                if (currentShift.lunch_start && !currentShift.lunch_end) {
-                    // End lunch break
+                // Check if there's an ongoing break (break_start without break_end)
+                const { data: ongoingBreak, error: breakCheckError } = await supabase
+                    .from('breaks')
+                    .select('*')
+                    .eq('shift_id', currentShift.id)
+                    .is('break_end', null)
+                    .single();
+
+                if (breakCheckError && breakCheckError.code !== 'PGRST116') {
+                    throw breakCheckError;
+                }
+
+                if (ongoingBreak) {
+                    // End the ongoing break
                     const { error } = await supabase
-                        .from('shifts')
-                        .update({ lunch_end: now })
-                        .eq('id', currentShift.id);
+                        .from('breaks')
+                        .update({ break_end: now })
+                        .eq('id', ongoingBreak.id);
 
                     if (error) throw error;
 
-                    // Update local state immediately
-                    setCurrentShift({
-                        ...currentShift,
-                        lunch_end: now
-                    });
-
-                    toast.success("Lunch break ended!");
+                    toast.success("Break ended!");
                 } else {
-                    // Start lunch break
+                    // Start a new break
                     const { error } = await supabase
-                        .from('shifts')
-                        .update({ lunch_start: now })
-                        .eq('id', currentShift.id);
+                        .from('breaks')
+                        .insert([{
+                            shift_id: currentShift.id,
+                            break_start: now
+                        }]);
 
                     if (error) throw error;
 
-                    // Update local state immediately
-                    setCurrentShift({
-                        ...currentShift,
-                        lunch_start: now
-                    });
-
-                    toast.success("Lunch break started!");
+                    toast.success("Break started!");
                 }
 
                 refetchShift();
@@ -165,13 +323,31 @@ export default function WorkerPortal() {
                     setIsProcessing(false);
                     return;
                 }
+                
+                // Verify the worker is at the same site as their current shift
+                if (currentShift.site_id !== site.id) {
+                    toast.error("Must be at the same site as your current shift");
+                    setIsProcessing(false);
+                    return;
+                }
 
-                // Calculate final hours
+                // Fetch all breaks for this shift
+                const { data: shiftBreaks, error: breaksError } = await supabase
+                    .from('breaks')
+                    .select('*')
+                    .eq('shift_id', currentShift.id)
+                    .order('break_start', { ascending: true });
+
+                if (breaksError) {
+                    console.error('Error fetching breaks:', breaksError);
+                    throw breaksError;
+                }
+
+                // Calculate final hours with breaks
                 const calculations = calculateShiftHours(
                     currentShift.entry_time,
                     now,
-                    currentShift.lunch_start,
-                    currentShift.lunch_end,
+                    shiftBreaks || [], // Pass all breaks
                     today
                 );
 
@@ -179,7 +355,7 @@ export default function WorkerPortal() {
                 console.log('Updating shift:', currentShift.id, 'with data:', {
                     leave_time: now,
                     has_left: true,
-                    worked_hours: calculations.workedHours,
+                    worked_hours: calculations.basicHours,
                     sunday_hours: calculations.sundayHours,
                     ot_hours: calculations.otHours
                 });
@@ -189,7 +365,7 @@ export default function WorkerPortal() {
                     .update({
                         leave_time: now,
                         has_left: true,
-                        worked_hours: calculations.workedHours,
+                        worked_hours: calculations.basicHours,
                         sunday_hours: calculations.sundayHours,
                         ot_hours: calculations.otHours
                     })
@@ -208,12 +384,12 @@ export default function WorkerPortal() {
                     ...currentShift,
                     leave_time: now,
                     has_left: true,
-                    worked_hours: calculations.workedHours,
+                    worked_hours: calculations.basicHours,
                     sunday_hours: calculations.sundayHours,
                     ot_hours: calculations.otHours
                 });
 
-                toast.success(`Clocked out successfully! Worked: ${calculations.workedHours}h, OT: ${calculations.otHours}h, Sunday: ${calculations.sundayHours}h`);
+                toast.success(`Clocked out successfully! Basic: ${calculations.basicHours}h, OT: ${calculations.otHours}h, Sun/PH: ${calculations.sundayHours}h`);
                 refetchShift();
             }
 
@@ -242,20 +418,493 @@ export default function WorkerPortal() {
         if (!currentShift) return { status: 'not_started', text: 'Not clocked in' };
 
         if (!currentShift.has_left) {
-            if (currentShift.lunch_start && !currentShift.lunch_end) {
-                return { status: 'on_lunch', text: 'On lunch break' };
-            }
+            const hasOngoingBreak = (shiftBreaks || []).some(b => b.break_start && !b.break_end);
+            if (hasOngoingBreak) return { status: 'on_lunch', text: 'On break' };
             return { status: 'working', text: 'Working' };
         }
 
         return { status: 'completed', text: 'Shift completed' };
     };
 
-    const shiftStatus = getShiftStatus();
+    const [shiftBreaks, setShiftBreaks] = useState([]);
+    const [totalBreakTime, setTotalBreakTime] = useState(0);
 
-    const canStartLunch = currentShift && currentShift.entry_time && !currentShift.lunch_start;
-    const canEndLunch = currentShift && currentShift.lunch_start && !currentShift.lunch_end;
+    // Fetch breaks for the current shift
+    useEffect(() => {
+        const fetchBreaks = async () => {
+            if (currentShift?.id) {
+                const { data: breaks, error } = await supabase
+                    .from('breaks')
+                    .select('*')
+                    .eq('shift_id', currentShift.id)
+                    .order('break_start', { ascending: true });
+
+                if (!error && breaks) {
+                    setShiftBreaks(breaks);
+                    // Calculate total break time in minutes
+                    const totalMinutes = breaks.reduce((total, breakItem) => {
+                        if (breakItem.break_start && breakItem.break_end) {
+                            const start = new Date(breakItem.break_start);
+                            const end = new Date(breakItem.break_end);
+                            return total + (end - start) / (1000 * 60); // Convert to minutes
+                        }
+                        return total;
+                    }, 0);
+                    setTotalBreakTime(totalMinutes);
+                }
+            }
+        };
+
+        fetchBreaks();
+    }, [currentShift?.id]);
+
+    const shiftStatus = getShiftStatus();
     const canClockOut = currentShift && currentShift.entry_time && !currentShift.has_left;
+
+    const handleDownloadPayslip = async (payslip) => {
+        try {
+            if (!payslip || !payslip.payslip_month) {
+                toast.error('Payslip record is invalid');
+                return;
+            }
+
+            const { data: workerDetails, error: workerError } = await supabase
+                .from(workerTable)
+                .select('*')
+                .eq(idField, workerId)
+                .single();
+
+            if (workerError) {
+                console.error('Error fetching worker details for payslip:', workerError);
+                toast.error('Failed to load worker details for payslip');
+                return;
+            }
+
+            const monthDate = new Date(payslip.payslip_month);
+            if (!Number.isFinite(monthDate.getTime())) {
+                toast.error('Invalid payslip month');
+                return;
+            }
+
+            const monthLabel = monthDate.toLocaleString('en-SG', { month: 'long', year: 'numeric' });
+
+            const totalAdditions = Number(payslip.total_additions || 0);
+            const netPay = Number(payslip.net_pay || 0);
+            const cpfEmployee = Number(payslip.cpf_employee_deduction || 0);
+            const sinda = Number(payslip.sinda_deduction || 0);
+
+            const otherDeductionsRaw = totalAdditions - netPay - cpfEmployee - sinda;
+            const otherDeductions = Math.abs(Math.round(otherDeductionsRaw * 100) / 100);
+
+            const printWindow = window.open('', '', 'height=800,width=1000');
+
+            if (!printWindow) {
+                toast.error('Popup blocked. Please allow popups to download payslip.');
+                return;
+            }
+
+            printWindow.document.write(`
+                <html>
+                    <head>
+                        <title>Payslip - ${workerDetails.employee_name || workerName} (${monthLabel})</title>
+                        <style>
+                            body {
+                                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                                padding: 24px;
+                                background: #ffffff;
+                                color: #1f2933;
+                                font-size: 12px;
+                            }
+                            .header {
+                                text-align: center;
+                                margin-bottom: 16px;
+                                padding-bottom: 8px;
+                                border-bottom: 2px solid #111827;
+                            }
+                            .company-name {
+                                font-size: 18px;
+                                font-weight: 700;
+                                margin: 0;
+                                color: #b91c1c;
+                            }
+                            .company-address {
+                                font-size: 11px;
+                                margin-top: 4px;
+                                color: #4b5563;
+                            }
+                            .section {
+                                margin-top: 16px;
+                                border-radius: 6px;
+                                border: 1px solid #e5e7eb;
+                                padding: 12px;
+                            }
+                            .section-title {
+                                font-size: 12px;
+                                font-weight: 600;
+                                margin-bottom: 8px;
+                                color: #374151;
+                            }
+                            .detail-grid {
+                                display: grid;
+                                grid-template-columns: repeat(2, minmax(0, 1fr));
+                                gap: 4px 16px;
+                            }
+                            .detail-label {
+                                font-size: 11px;
+                                color: #6b7280;
+                            }
+                            .detail-value {
+                                font-size: 11px;
+                                font-weight: 500;
+                                color: #111827;
+                            }
+                            .amount-table {
+                                width: 100%;
+                                border-collapse: collapse;
+                                margin-top: 4px;
+                            }
+                            .amount-table th,
+                            .amount-table td {
+                                padding: 6px 8px;
+                                border-bottom: 1px solid #e5e7eb;
+                                font-size: 11px;
+                            }
+                            .amount-table th {
+                                text-align: left;
+                                font-weight: 600;
+                                color: #4b5563;
+                                background: #f9fafb;
+                            }
+                            .amount-table td.amount {
+                                text-align: right;
+                                font-variant-numeric: tabular-nums;
+                            }
+                            .totals {
+                                margin-top: 12px;
+                                display: flex;
+                                gap: 8px;
+                            }
+                            .total-box {
+                                flex: 1;
+                                padding: 8px 10px;
+                                border-radius: 6px;
+                                border: 1px solid #e5e7eb;
+                                display: flex;
+                                justify-content: space-between;
+                                align-items: center;
+                                font-size: 11px;
+                            }
+                            .total-box.additions {
+                                background: #ecfdf3;
+                                border-color: #bbf7d0;
+                                color: #166534;
+                            }
+                            .total-box.deductions {
+                                background: #fef2f2;
+                                border-color: #fecaca;
+                                color: #b91c1c;
+                            }
+                            .net-pay-box {
+                                margin-top: 16px;
+                                padding: 12px;
+                                border-radius: 8px;
+                                border: 2px solid #1d4ed8;
+                                background: #eff6ff;
+                                text-align: center;
+                            }
+                            .net-pay-label {
+                                font-size: 12px;
+                                font-weight: 600;
+                                color: #1d4ed8;
+                                letter-spacing: 0.05em;
+                            }
+                            .net-pay-amount {
+                                margin-top: 4px;
+                                font-size: 20px;
+                                font-weight: 700;
+                                color: #1d4ed8;
+                                letter-spacing: 0.05em;
+                            }
+                            .signature-section {
+                                margin-top: 32px;
+                                display: flex;
+                                justify-content: space-between;
+                                font-size: 10px;
+                                color: #4b5563;
+                            }
+                            .signature-box {
+                                width: 40%;
+                                text-align: center;
+                            }
+                            .signature-line {
+                                border-bottom: 1px solid #111827;
+                                height: 18px;
+                                margin-bottom: 4px;
+                            }
+                            @media print {
+                                body {
+                                    padding: 12mm;
+                                    font-size: 10px;
+                                }
+                                .net-pay-amount {
+                                    font-size: 18px;
+                                }
+                                @page {
+                                    size: A4;
+                                    margin: 10mm;
+                                }
+                            }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="header">
+                            <h1 class="company-name">AKK ENGINEERING PTE. LTD.</h1>
+                            <p class="company-address">15 Kaki Bukit Rd 4, #01-50, Singapore 417808</p>
+                            <p class="company-address" style="margin-top:6px;font-weight:500;">PAYSLIP - ${monthLabel}</p>
+                        </div>
+
+                        <div class="section">
+                            <div class="section-title">Employee Details</div>
+                            <div class="detail-grid">
+                                <div>
+                                    <div class="detail-label">Employee Name</div>
+                                    <div class="detail-value">${workerDetails.employee_name || workerName}</div>
+                                </div>
+                                <div>
+                                    <div class="detail-label">Employee ID</div>
+                                    <div class="detail-value">${workerDetails.employee_id || workerId}</div>
+                                </div>
+                                <div>
+                                    <div class="detail-label">NRIC/FIN</div>
+                                    <div class="detail-value">${workerDetails.nric_fin || '-'}</div>
+                                </div>
+                                <div>
+                                    <div class="detail-label">Bank Account</div>
+                                    <div class="detail-value">${workerDetails.bank_account_number || '-'}</div>
+                                </div>
+                                <div>
+                                    <div class="detail-label">Designation</div>
+                                    <div class="detail-value">${workerDetails.designation || '-'}</div>
+                                </div>
+                                <div>
+                                    <div class="detail-label">Date Joined</div>
+                                    <div class="detail-value">${workerDetails.date_joined || '-'}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="section">
+                            <div class="section-title">Earnings and Deductions</div>
+                            <table class="amount-table">
+                                <thead>
+                                    <tr>
+                                        <th>Description</th>
+                                        <th class="amount">Amount (SGD)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>Basic Pay</td>
+                                        <td class="amount">${totalAdditions.toFixed(2)}</td>
+                                    </tr>
+                                    <tr>
+                                        <td>CPF Employee</td>
+                                        <td class="amount">-${cpfEmployee.toFixed(2)}</td>
+                                    </tr>
+                                    <tr>
+                                        <td>SINDA</td>
+                                        <td class="amount">-${sinda.toFixed(2)}</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Other Deductions (Loans / Adjustments)</td>
+                                        <td class="amount">-${otherDeductions.toFixed(2)}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+
+                            <div class="totals">
+                                <div class="total-box additions">
+                                    <span>Total Additions</span>
+                                    <span>${totalAdditions.toFixed(2)}</span>
+                                </div>
+                                <div class="total-box deductions">
+                                    <span>Total Deductions</span>
+                                    <span>${(totalAdditions - netPay).toFixed(2)}</span>
+                                </div>
+                            </div>
+
+                            <div class="net-pay-box">
+                                <div class="net-pay-label">NET PAY</div>
+                                <div class="net-pay-amount">$${netPay.toFixed(2)}</div>
+                            </div>
+                        </div>
+
+                        <div class="signature-section">
+                            <div class="signature-box">
+                                <div class="signature-line"></div>
+                                <div>Employee Signature</div>
+                            </div>
+                            <div class="signature-box">
+                                <div class="signature-line"></div>
+                                <div>Authorised Signature</div>
+                            </div>
+                        </div>
+                    </body>
+                </html>
+            `);
+
+            printWindow.document.close();
+            printWindow.print();
+        } catch (error) {
+            console.error('Error generating payslip:', error);
+            toast.error('Failed to generate payslip');
+        }
+    };
+
+    // Handle leave request submission
+    const handleLeaveRequest = async () => {
+        if (!leaveRequestData.leave_type || !leaveRequestData.from_date) {
+            toast.error("Please fill in all required fields");
+            return;
+        }
+
+        // Check if the worker has enough leave balance
+        const leaveType = leaveRequestData.leave_type.toLowerCase();
+        const balanceField = `${leaveType}_leave_balance`;
+        const currentBalance = workerBalance?.[balanceField] || 0;
+        
+        // Calculate number of days requested
+        const fromDate = new Date(leaveRequestData.from_date);
+        const toDate = leaveRequestData.leave_duration === 'full_day' ? 
+            new Date(leaveRequestData.from_date) : 
+            new Date(leaveRequestData.to_date);
+            
+        // Calculate days difference
+        const timeDiff = toDate - fromDate;
+        const daysDiff = Math.ceil(timeDiff / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end dates
+
+        if (currentBalance < daysDiff) {
+            toast.error(`Insufficient ${leaveType} leave balance. You have ${currentBalance} day(s) left.`);
+            return;
+        }
+
+        setIsProcessing(true);
+
+        try {
+            const { error } = await supabase
+                .from('leave_requests')
+                .insert([
+                    {
+                        employee_id: workerId,
+                        employee_name: workerName,
+                        leave_type: leaveRequestData.leave_type,
+                        leave_duration: leaveRequestData.leave_duration,
+                        from_date: leaveRequestData.from_date,
+                        to_date: leaveRequestData.leave_duration === 'full_day' ? 
+                            leaveRequestData.from_date : 
+                            leaveRequestData.to_date,
+                        reason: leaveRequestData.reason || '',
+                        status: 'pending',
+                        created_at: new Date().toISOString(),
+                        worker_type: workerType
+                    }
+                ]);
+
+            if (error) throw error;
+
+            // Update the worker's leave balance if the leave is approved (handled by admin)
+            // The actual deduction will happen when the admin approves the leave
+            toast.success("Leave request submitted successfully!");
+            setShowLeaveRequestDialog(false);
+            setLeaveRequestData({
+                leave_type: '',
+                leave_duration: 'full_day',
+                from_date: '',
+                to_date: '',
+                reason: ''
+            });
+        } catch (error) {
+            console.error('Error submitting leave request:', error);
+            toast.error(error.message || 'Failed to submit leave request');
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
+    const handleSubmitLeaveRequest = () => {
+        if (!leaveRequestData.leave_type || !leaveRequestData.from_date || !leaveRequestData.to_date) {
+            toast.error('Please fill in all required fields');
+            return;
+        }
+
+        const fromDate = new Date(leaveRequestData.from_date);
+        const toDate = new Date(leaveRequestData.to_date);
+
+        if (toDate < fromDate) {
+            toast.error('To date cannot be before from date');
+            return;
+        }
+
+        // Define paid leave types at the start (fix hoisting issue)
+        const paidLeaveTypes = ['Annual Leave', 'Sick Leave & Hospitalisation Leave'];
+        const isPaidLeave = paidLeaveTypes.includes(leaveRequestData.leave_type);
+
+        // Calculate the number of days requested (accounting for half-days and excluding Sundays for paid leave)
+        let daysRequested = 0;
+
+        // Count calendar days first
+        const timeDiff = toDate.getTime() - fromDate.getTime();
+        const totalCalendarDays = Math.ceil(timeDiff / (1000 * 3600 * 24)) + 1; // +1 to include both start and end dates
+
+        if (isPaidLeave) {
+            // For paid leave, count only weekdays (exclude Sundays and public holidays)
+            let weekdayCount = 0;
+            for (let date = new Date(fromDate); date <= toDate; date.setDate(date.getDate() + 1)) {
+                const isSunday = date.getDay() === 0;
+                const isHoliday = false; // You can add public holiday logic here if needed
+                if (!isSunday && !isHoliday) {
+                    weekdayCount += 1;
+                }
+            }
+            daysRequested = weekdayCount;
+        } else {
+            // For unpaid leave, count all calendar days
+            daysRequested = totalCalendarDays;
+        }
+
+        // Adjust for half-day leaves
+        if (leaveRequestData.leave_duration?.includes('half_day')) {
+            daysRequested = daysRequested * 0.5; // Half-day = 0.5 days
+        }
+
+        // Check balance for paid leave types (stricter validation)
+        if (isPaidLeave && workerBalance) {
+            const availableBalance = leaveRequestData.leave_type === 'Annual Leave'
+                ? workerBalance.annual_leave_balance || 0
+                : workerBalance.medical_leave_balance || 0;
+
+            if (daysRequested > availableBalance) {
+                const leaveTypeName = leaveRequestData.leave_type === 'Annual Leave' ? 'Annual Leave' : 'Medical Leave';
+                toast.error(
+                    `Insufficient ${leaveTypeName} balance. You have ${availableBalance} days available but requested ${daysRequested} days.`
+                );
+                return;
+            }
+
+            // Additional check: don't allow requests that would leave less than 0 balance
+            if (availableBalance - daysRequested < 0) {
+                toast.error('This request would result in negative leave balance. Please reduce the number of days requested.');
+                return;
+            }
+        }
+
+        const leaveDataWithDays = {
+            ...leaveRequestData,
+            days_requested: daysRequested
+        };
+
+        submitLeaveRequestMutation.mutate(leaveDataWithDays);
+    };
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200">
@@ -299,15 +948,34 @@ export default function WorkerPortal() {
                             <p className="font-medium">{workerName}</p>
                             <p className="text-sm text-slate-300">ID: {workerId}</p>
                         </div>
-                        <Link to={createPageUrl('History')}>
+                        <div className="flex gap-2">
+                            <Link to={createPageUrl('LeaveHistory')}>
+                                <Button
+                                    variant="outline"
+                                    className="border-white/30 text-white hover:bg-white/10 bg-transparent"
+                                >
+                                    <Calendar className="w-4 h-4 mr-2" />
+                                    <span className="hidden sm:inline">Leave History</span>
+                                </Button>
+                            </Link>
+                            <Link to={createPageUrl('History')}>
+                                <Button
+                                    variant="outline"
+                                    className="border-white/30 text-white hover:bg-white/10 bg-transparent"
+                                >
+                                    <History className="w-4 h-4 mr-2" />
+                                    <span className="hidden sm:inline">History</span>
+                                </Button>
+                            </Link>
                             <Button
                                 variant="outline"
                                 className="border-white/30 text-white hover:bg-white/10 bg-transparent"
+                                onClick={() => setShowPayslipDialog(true)}
                             >
-                                <History className="w-4 h-4 mr-2" />
-                                <span className="hidden sm:inline">History</span>
+                                <FileText className="w-4 h-4 mr-2" />
+                                <span className="hidden sm:inline">Payslips</span>
                             </Button>
-                        </Link>
+                        </div>
                     </div>
                 </div>
             </header>
@@ -354,10 +1022,29 @@ export default function WorkerPortal() {
                                             </Badge>
 
                                             {currentShift && (
-                                                <div className="text-sm text-slate-600">
-                                                    <p>Site: {currentShift.sites?.site_name}</p>
+                                                <div className="text-sm text-slate-600 space-y-1">
+                                                    <p className="font-medium">Site: {currentShift.sites?.site_name}</p>
                                                     {currentShift.entry_time && (
                                                         <p>Started: {formatTime(currentShift.entry_time)}</p>
+                                                    )}
+                                                    {shiftBreaks.length > 0 && (
+                                                        <div className="mt-2 pt-2 border-t border-slate-100">
+                                                            <p className="font-medium">Breaks:</p>
+                                                            <ul className="space-y-1 mt-1">
+                                                                {shiftBreaks.map((breakItem, index) => (
+                                                                    <li key={breakItem.id} className="flex justify-between">
+                                                                        <span>Break {index + 1}:</span>
+                                                                        <span>
+                                                                            {formatTime(breakItem.break_start)}
+                                                                            {breakItem.break_end ? ` - ${formatTime(breakItem.break_end)}` : ' (Ongoing)'}
+                                                                        </span>
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                            <p className="mt-1 text-right text-slate-700 font-medium">
+                                                                Total Break: {Math.floor(totalBreakTime / 60)}h {totalBreakTime % 60}m
+                                                            </p>
+                                                        </div>
                                                     )}
                                                 </div>
                                             )}
@@ -376,7 +1063,7 @@ export default function WorkerPortal() {
                             </Card>
 
                             {/* Action Buttons */}
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                                 {/* Clock In */}
                                 <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
                                     <Card
@@ -401,29 +1088,29 @@ export default function WorkerPortal() {
                                     </Card>
                                 </motion.div>
 
-                                {/* Lunch Break */}
-                                <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                                    <Card
-                                        onClick={() => setActiveScan('lunch')}
-                                        className={`cursor-pointer border-0 shadow-lg transition-colors ${
-                                            canStartLunch || canEndLunch
-                                                ? 'hover:bg-orange-50'
-                                                : 'opacity-50 cursor-not-allowed'
-                                        }`}
-                                    >
-                                        <CardContent className="p-6 text-center">
-                                            <div className="w-16 h-16 bg-orange-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                                                <Coffee className="w-8 h-8 text-orange-600" />
-                                            </div>
-                                            <h3 className="text-xl font-bold text-slate-800 mb-2">
-                                                {canEndLunch ? 'End Lunch' : 'Start Lunch'}
-                                            </h3>
-                                            <p className="text-slate-600 text-sm">
-                                                {canEndLunch ? 'Resume work' : 'Take lunch break'}
-                                            </p>
-                                        </CardContent>
-                                    </Card>
-                                </motion.div>
+                {/* Breaks */}
+                <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                    <Card
+                        onClick={() => setActiveScan('breaks')}
+                        className={`cursor-pointer border-0 shadow-lg transition-colors ${
+                            currentShift && currentShift.entry_time && !currentShift.has_left
+                                ? 'hover:bg-orange-50'
+                                : 'opacity-50 cursor-not-allowed'
+                        }`}
+                    >
+                        <CardContent className="p-6 text-center">
+                            <div className="w-16 h-16 bg-orange-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                                <Coffee className="w-8 h-8 text-orange-600" />
+                            </div>
+                            <h3 className="text-xl font-bold text-slate-800 mb-2">
+                                Take Break
+                            </h3>
+                            <p className="text-slate-600 text-sm">
+                                Start or end a break
+                            </p>
+                        </CardContent>
+                    </Card>
+                </motion.div>
 
                                 {/* Clock Out */}
                                 <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
@@ -448,7 +1135,79 @@ export default function WorkerPortal() {
                                         </CardContent>
                                     </Card>
                                 </motion.div>
+
+                                {/* Leave Request */}
+                                <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                                    <Card
+                                        onClick={() => setShowLeaveRequestDialog(true)}
+                                        className="cursor-pointer border-0 shadow-lg transition-colors hover:bg-blue-50"
+                                    >
+                                        <CardContent className="p-6 text-center">
+                                            <div className="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                                                <FileText className="w-8 h-8 text-blue-600" />
+                                            </div>
+                                            <h3 className="text-xl font-bold text-slate-800 mb-2">
+                                                Leave Request
+                                            </h3>
+                                            <p className="text-slate-600 text-sm">
+                                                Submit leave application
+                                            </p>
+                                        </CardContent>
+                                    </Card>
+                                </motion.div>
                             </div>
+
+                            {/* Leave History */}
+                            {workerLeaveRequests.length > 0 && (
+                                <Card className="border-0 shadow-lg">
+                                    <CardHeader>
+                                        <CardTitle className="flex items-center gap-2">
+                                            <Calendar className="w-5 h-5" />
+                                            Leave History
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent>
+                                        {isLoadingLeaveHistory ? (
+                                            <div className="flex items-center justify-center py-6">
+                                                <Loader2 className="w-6 h-6 animate-spin text-slate-500" />
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-3">
+                                                {workerLeaveRequests.slice(0, 5).map((request) => (
+                                                    <div key={request.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                                                        <div className="flex items-center gap-3">
+                                                            <Badge
+                                                                variant={request.status === 'approved' ? 'default' : request.status === 'rejected' ? 'destructive' : 'secondary'}
+                                                                className={
+                                                                    request.status === 'approved' ? 'bg-green-100 text-green-800' :
+                                                                    request.status === 'rejected' ? 'bg-red-100 text-red-800' :
+                                                                    'bg-yellow-100 text-yellow-800'
+                                                                }
+                                                            >
+                                                                {request.status.toUpperCase()}
+                                                            </Badge>
+                                                            <div>
+                                                                <p className="font-medium text-sm">{request.leave_type} Request</p>
+                                                                <p className="text-xs text-slate-500">
+                                                                    {formatDate(request.from_date)} - {formatDate(request.to_date)}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="text-right text-xs text-slate-500">
+                                                            {format(new Date(request.created_at), 'MMM dd, yyyy')}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                                {workerLeaveRequests.length > 5 && (
+                                                    <p className="text-xs text-slate-500 text-center pt-2">
+                                                        Showing 5 most recent requests. Check History page for all requests.
+                                                    </p>
+                                                )}
+                                            </div>
+                                        )}
+                                    </CardContent>
+                                </Card>
+                            )}
                         </motion.div>
                     ) : (
                         <motion.div
@@ -467,12 +1226,12 @@ export default function WorkerPortal() {
                                 </div>
                                 <h2 className="text-3xl font-bold text-slate-800 mb-2">
                                     {activeScan === 'entry' && 'Clock In'}
-                                    {activeScan === 'lunch' && (canEndLunch ? 'End Lunch Break' : 'Start Lunch Break')}
+                                    {activeScan === 'breaks' && 'Take Break'}
                                     {activeScan === 'leave' && 'Clock Out'}
                                 </h2>
                                 <p className="text-slate-600 text-lg">
                                     {activeScan === 'entry' && 'Start your work shift by scanning the QR code at your site'}
-                                    {activeScan === 'lunch' && (canEndLunch ? 'Resume work by scanning the QR code' : 'Take a break by scanning the QR code')}
+                                    {activeScan === 'breaks' && 'Start or end a break by scanning the QR code'}
                                     {activeScan === 'leave' && 'End your work shift by scanning the QR code at your site'}
                                 </p>
                             </div>
@@ -510,12 +1269,12 @@ export default function WorkerPortal() {
                                 <h3 className="text-lg font-semibold text-slate-800 mb-4 text-center">
                                     QR Code Scanner
                                 </h3>
-                                <QRScanner
-                                    action={activeScan}
-                                    onScanSuccess={handleScanSuccess}
-                                    onScanError={handleScanError}
-                                    currentShiftSiteId={(activeScan === 'leave' || activeScan === 'lunch') ? currentShift?.site_id : null}
-                                />
+                <QRScanner
+                    action={activeScan}
+                    onScanSuccess={handleScanSuccess}
+                    onScanError={handleScanError}
+                    currentShiftSiteId={(activeScan === 'leave' || activeScan === 'breaks') ? currentShift?.site_id : null}
+                />
                             </div>
 
                             {/* Action Buttons */}
@@ -531,7 +1290,7 @@ export default function WorkerPortal() {
                             </div>
 
                             {/* Site Info */}
-                            {currentShift && (activeScan === 'leave' || activeScan === 'lunch') && (
+                            {currentShift && (activeScan === 'leave' || activeScan === 'breaks') && (
                                 <Card className="border-0 shadow-md mt-6 bg-slate-50">
                                     <CardContent className="p-4">
                                         <p className="text-sm text-slate-600 text-center">
@@ -552,6 +1311,209 @@ export default function WorkerPortal() {
                     © {new Date().getFullYear()} AKK ENGINEERING PTE. LTD. — Time Sheet System
                 </p>
             </footer>
+
+            {/* Payslip Dialog */}
+            <Dialog open={showPayslipDialog} onOpenChange={setShowPayslipDialog}>
+                <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle>Your Payslips</DialogTitle>
+                        <DialogDescription>
+                            Download or print your monthly payslips that have been issued by admin.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {isLoadingPayslips ? (
+                        <div className="flex items-center justify-center py-8">
+                            <Loader2 className="w-6 h-6 animate-spin text-slate-500" />
+                        </div>
+                    ) : !workerPayslips || workerPayslips.length === 0 ? (
+                        <div className="text-center py-8">
+                            <FileText className="w-10 h-10 mx-auto text-slate-300 mb-3" />
+                            <h4 className="text-sm font-medium text-slate-700 mb-1">No payslips found</h4>
+                            <p className="text-xs text-slate-500">
+                                Payslips will appear here after your salary is processed by admin.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full border-collapse border border-slate-200 text-xs">
+                                <thead className="bg-slate-50">
+                                    <tr>
+                                        <th className="border border-slate-200 px-2 py-1 text-left">Month</th>
+                                        <th className="border border-slate-200 px-2 py-1 text-right">Total Additions</th>
+                                        <th className="border border-slate-200 px-2 py-1 text-right">Net Pay</th>
+                                        <th className="border border-slate-200 px-2 py-1 text-center">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {workerPayslips.map((payslip) => {
+                                        const monthDate = payslip.payslip_month ? new Date(payslip.payslip_month) : null;
+                                        const displayMonth = monthDate
+                                            ? monthDate.toLocaleString('en-SG', { month: 'short', year: 'numeric' })
+                                            : payslip.payslip_month;
+
+                                        return (
+                                            <tr key={payslip.id}>
+                                                <td className="border border-slate-200 px-2 py-1">{displayMonth}</td>
+                                                <td className="border border-slate-200 px-2 py-1 text-right">
+                                                    ${Number(payslip.total_additions || 0).toFixed(2)}
+                                                </td>
+                                                <td className="border border-slate-200 px-2 py-1 text-right font-semibold">
+                                                    ${Number(payslip.net_pay || 0).toFixed(2)}
+                                                </td>
+                                                <td className="border border-slate-200 px-2 py-1 text-center">
+                                                    <Button
+                                                        size="xs"
+                                                        className="bg-blue-600 hover:bg-blue-700 text-xs"
+                                                        onClick={() => handleDownloadPayslip(payslip)}
+                                                    >
+                                                        <Download className="w-3 h-3 mr-1" />
+                                                        Download
+                                                    </Button>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </DialogContent>
+            </Dialog>
+
+            {/* Leave Request Dialog */}
+            <Dialog open={showLeaveRequestDialog} onOpenChange={setShowLeaveRequestDialog}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Submit Leave Request</DialogTitle>
+                        <DialogDescription>
+                            Request for annual leave (AL) or medical leave (MC). All requests require admin approval.
+                        </DialogDescription>
+                        {workerBalance && !isLoadingBalance && (
+                            <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                                <h4 className="text-sm font-medium text-blue-800 mb-2">Your Current Leave Balance</h4>
+                                <div className="flex gap-4 text-sm">
+                                    <span className="text-blue-700">
+                                        <strong>Annual Leave:</strong> {workerBalance.annual_leave_balance || 0} days
+                                    </span>
+                                    <span className="text-blue-700">
+                                        <strong>Medical Leave:</strong> {workerBalance.medical_leave_balance || 0} days
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Type of Leave</label>
+                            <Select
+                                value={leaveRequestData.leave_type}
+                                onValueChange={(value) => setLeaveRequestData({ ...leaveRequestData, leave_type: value })}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Select leave type" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectGroup>
+                                        <SelectLabel className="text-green-600 font-medium">Paid Leave Types</SelectLabel>
+                                        <SelectItem value="Annual Leave">Annual Leave</SelectItem>
+                                        <SelectItem value="Maternity Leave">Maternity Leave</SelectItem>
+                                        <SelectItem value="Paternity Leave">Paternity Leave</SelectItem>
+                                        <SelectItem value="Shared Parental Leave">Shared Parental Leave</SelectItem>
+                                        <SelectItem value="Childcare Leave">Childcare Leave</SelectItem>
+                                        <SelectItem value="Sick Leave & Hospitalisation Leave">Sick Leave & Hospitalisation Leave</SelectItem>
+                                        <SelectItem value="National Service (NS) Leave">National Service (NS) Leave</SelectItem>
+                                        <SelectItem value="Adoption Leave">Adoption Leave</SelectItem>
+                                        <SelectItem value="Non-Statutory Leave (Employer Provided)">Non-Statutory Leave (Employer Provided)</SelectItem>
+                                        <SelectItem value="Compassionate / Bereavement Leave">Compassionate / Bereavement Leave</SelectItem>
+                                        <SelectItem value="Marriage Leave">Marriage Leave</SelectItem>
+                                        <SelectItem value="Study / Exam Leave">Study / Exam Leave</SelectItem>
+                                        <SelectItem value="Birthday Leave">Birthday Leave</SelectItem>
+                                        <SelectItem value="Mental Health Day">Mental Health Day</SelectItem>
+                                        <SelectItem value="Volunteer Leave">Volunteer Leave</SelectItem>
+                                    </SelectGroup>
+                                    <SelectGroup>
+                                        <SelectLabel className="text-red-600 font-medium">Unpaid Leave Types</SelectLabel>
+                                        <SelectItem value="Unpaid Leave">Unpaid Leave</SelectItem>
+                                        <SelectItem value="Unpaid Infant Care Leave">Unpaid Infant Care Leave</SelectItem>
+                                    </SelectGroup>
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Leave Duration</label>
+                            <Select
+                                value={leaveRequestData.leave_duration}
+                                onValueChange={(value) => setLeaveRequestData({ ...leaveRequestData, leave_duration: value })}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue placeholder="Select duration" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="full_day">Full Day</SelectItem>
+                                    <SelectItem value="half_day_morning">Half Day - Morning</SelectItem>
+                                    <SelectItem value="half_day_afternoon">Half Day - Afternoon</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">From Date</label>
+                                <Input
+                                    type="date"
+                                    value={leaveRequestData.from_date}
+                                    onChange={(e) => setLeaveRequestData({ ...leaveRequestData, from_date: e.target.value })}
+                                />
+                            </div>
+                            <div className="space-y-2">
+                                <label className="text-sm font-medium">To Date</label>
+                                <Input
+                                    type="date"
+                                    value={leaveRequestData.to_date}
+                                    onChange={(e) => setLeaveRequestData({ ...leaveRequestData, to_date: e.target.value })}
+                                />
+                            </div>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Reason (Optional)</label>
+                            <Textarea
+                                placeholder="Please provide a reason for your leave request..."
+                                value={leaveRequestData.reason}
+                                onChange={(e) => setLeaveRequestData({ ...leaveRequestData, reason: e.target.value })}
+                                rows={3}
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button
+                            variant="outline"
+                            onClick={() => {
+                                setShowLeaveRequestDialog(false);
+                                setLeaveRequestData({
+                                    leave_type: '',
+                                    from_date: '',
+                                    to_date: '',
+                                    reason: ''
+                                });
+                            }}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            onClick={handleLeaveRequest}
+                            disabled={isProcessing}
+                            className="bg-blue-600 hover:bg-blue-700"
+                        >
+                            {isProcessing ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Submitting...
+                                </>
+                            ) : 'Submit Request'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }
