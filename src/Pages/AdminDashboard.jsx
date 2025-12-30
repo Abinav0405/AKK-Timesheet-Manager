@@ -41,6 +41,15 @@ import {
     validateBirthday
 } from "@/lib/contributionCalculations";
 
+// Production logging system
+const DEBUG_MODE = process.env.NODE_ENV === 'development';
+const log = {
+    info: (message, ...args) => DEBUG_MODE && console.log(message, ...args),
+    error: (message, ...args) => console.error(message, ...args), // Always log errors
+    warn: (message, ...args) => DEBUG_MODE && console.warn(message, ...args),
+    debug: (message, ...args) => DEBUG_MODE && console.debug(message, ...args)
+};
+
 export default function AdminDashboard() {
     const navigate = useNavigate();
     const [filter, setFilter] = useState('all');
@@ -420,7 +429,7 @@ export default function AdminDashboard() {
     // Delete leave request mutation
     const deleteLeaveMutation = useMutation({
         mutationFn: async (leaveId) => {
-            console.log('🗑️ DELETING LEAVE REQUEST:', leaveId);
+            log.info('🗑️ DELETING LEAVE REQUEST:', leaveId);
 
             // First get the leave request details
             const { data: leaveRequest, error: fetchError } = await supabase
@@ -434,7 +443,7 @@ export default function AdminDashboard() {
                 throw fetchError;
             }
 
-            console.log('📋 Leave request details:', leaveRequest);
+            log.info('📋 Leave request details:', leaveRequest);
 
             // Calculate days to restore to balance - ONLY PAID DAYS
             const leaveDays = [];
@@ -476,7 +485,7 @@ export default function AdminDashboard() {
             // Only restore the PAID days that were actually deducted
             const daysToRestore = paidDays;
 
-            console.log('🔄 Days to restore:', daysToRestore, 'for', leaveRequest.leave_type);
+            log.info('🔄 Days to restore:', daysToRestore, 'for', leaveRequest.leave_type);
 
             // Only restore leave balance if the leave was previously approved
             if (leaveRequest.status === 'approved') {
@@ -492,7 +501,7 @@ export default function AdminDashboard() {
                 const isMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
 
                 if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
-                    console.log('💰 RESTORING LEAVE BALANCE - Worker:', leaveRequest.employee_id, 'Status:', leaveRequest.status);
+                    log.info('💰 RESTORING LEAVE BALANCE - Worker:', leaveRequest.employee_id, 'Status:', leaveRequest.status);
 
                     // Calculate weekdays only (excluding Sundays and holidays) to restore
                     let daysToRestore = leaveDays.filter(date => {
@@ -506,7 +515,7 @@ export default function AdminDashboard() {
                         daysToRestore = daysToRestore * 0.5; // Half-day = 0.5 days
                     }
 
-                    console.log('📅 Days to restore (weekdays only):', daysToRestore, 'for', leaveRequest.leave_type);
+                    log.info('📅 Days to restore (weekdays only):', daysToRestore, 'for', leaveRequest.leave_type);
 
                     // Get and update balance
                     const { data: currentBalanceData, error: balanceError } = await supabase
@@ -522,7 +531,7 @@ export default function AdminDashboard() {
                         currentBalanceData.medical_leave_balance;
                     const newBalance = currentBalance + daysToRestore;
 
-                    console.log('🔢 Balance calculation:', currentBalance, '+', daysToRestore, '=', newBalance);
+                    log.info('🔢 Balance calculation:', currentBalance, '+', daysToRestore, '=', newBalance);
 
                     const { error: updateError } = await supabase
                         .from('worker_details')
@@ -533,12 +542,12 @@ export default function AdminDashboard() {
 
                     if (updateError) throw updateError;
 
-                    console.log('✅ Balance successfully restored from', currentBalance, 'to', newBalance);
+                    log.info('✅ Balance successfully restored from', currentBalance, 'to', newBalance);
                 }
             }
 
             // Delete ALL associated shift records for this leave period (not just specific types)
-            console.log('🗑️ Deleting shift records for leave period...');
+            log.info('🗑️ Deleting shift records for leave period...');
             const { error: deleteShiftsError } = await supabase
                 .from('shifts')
                 .delete()
@@ -552,7 +561,7 @@ export default function AdminDashboard() {
                 throw deleteShiftsError;
             }
 
-            console.log('✅ Leave shifts deleted');
+            log.info('✅ Leave shifts deleted');
 
             // Verify shift deletion worked
             const { data: verifyShifts, error: verifyShiftsError } = await supabase
@@ -567,17 +576,17 @@ export default function AdminDashboard() {
                 console.error('❌ Failed to verify shift deletion:', verifyShiftsError);
                 throw verifyShiftsError;
             } else {
-                console.log('🔍 Leave shifts remaining after deletion:', verifyShifts?.length || 0);
+                log.info('🔍 Leave shifts remaining after deletion:', verifyShifts?.length || 0);
                 if (verifyShifts && verifyShifts.length > 0) {
                     console.error('❌ CRITICAL: Leave shifts were not deleted properly!', verifyShifts);
                     throw new Error(`Shift deletion failed - ${verifyShifts.length} leave shifts still exist after deletion attempt.`);
                 } else {
-                    console.log('✅ All leave shifts successfully deleted');
+                    log.info('✅ All leave shifts successfully deleted');
                 }
             }
 
             // Finally delete the specific leave request by ID
-            console.log('🗑️ Deleting leave request with ID:', leaveId);
+            log.info('🗑️ Deleting leave request with ID:', leaveId);
 
             const { data: deleteData, error: deleteError } = await supabase
                 .from('leave_requests')
@@ -590,7 +599,7 @@ export default function AdminDashboard() {
                 throw deleteError;
             }
 
-            console.log('✅ Leave request deleted successfully. Deleted count:', deleteData?.length || 0, 'records');
+            log.info('✅ Leave request deleted successfully. Deleted count:', deleteData?.length || 0, 'records');
 
             // Verify the specific record is actually gone
             const { data: verifyData, error: verifyError } = await supabase
@@ -600,7 +609,7 @@ export default function AdminDashboard() {
                 .single();
 
             if (verifyError && verifyError.code === 'PGRST116') {
-                console.log('✅ VERIFICATION: Leave successfully deleted from database');
+                log.info('✅ VERIFICATION: Leave successfully deleted from database');
             } else if (verifyData) {
                 console.error('❌ VERIFICATION FAILED: Leave still exists in database!', verifyData);
                 throw new Error('Database delete operation failed - record still exists. Check Supabase RLS policies, permissions, or foreign key constraints.');
@@ -613,7 +622,7 @@ export default function AdminDashboard() {
             return leaveRequest;
         },
         onSuccess: (data, leaveId) => {
-            console.log('✅ LEAVE DELETE SUCCESSFUL - Leave ID:', leaveId, 'Worker:', data.employee_id);
+            log.info('✅ LEAVE DELETE SUCCESSFUL - Leave ID:', leaveId, 'Worker:', data.employee_id);
 
             // Force refetch all relevant queries
             queryClient.refetchQueries({ queryKey: ['allLeaveRequests'] });
@@ -660,7 +669,7 @@ export default function AdminDashboard() {
 
             // If approved, create shift records for each leave day AND deduct from leave balance
             if (status === 'approved') {
-                console.log('Creating leave shifts for approved leave:', leaveRequest.id);
+                log.info('Creating leave shifts for approved leave:', leaveRequest.id);
 
                 const leaveDays = [];
                 const fromDate = new Date(leaveRequest.from_date);
@@ -670,7 +679,7 @@ export default function AdminDashboard() {
                     leaveDays.push(new Date(date));
                 }
 
-                console.log('Leave days to create shifts for:', leaveDays.length);
+                log.info('Leave days to create shifts for:', leaveDays.length);
 
                 // FIRST: Delete any existing work shifts for these dates to avoid conflicts
                 const workDates = leaveDays.map(date => date.toISOString().split('T')[0]);
@@ -684,7 +693,7 @@ export default function AdminDashboard() {
                 if (deleteError) {
                     console.error('Error deleting conflicting work shifts:', deleteError);
                 } else {
-                    console.log('Deleted conflicting work shifts');
+                    log.info('Deleted conflicting work shifts');
                 }
 
                 // Determine leave type categories
@@ -700,7 +709,7 @@ export default function AdminDashboard() {
                 const isAnnualLeave = leaveRequest.leave_type === 'Annual Leave';
                 const isMedicalLeave = leaveRequest.leave_type === 'Sick Leave & Hospitalisation Leave';
 
-                console.log('Leave type:', leaveRequest.leave_type, 'Is paid:', isPaidLeave, 'Is unpaid:', isUnpaidLeave);
+                log.info('Leave type:', leaveRequest.leave_type, 'Is paid:', isPaidLeave, 'Is unpaid:', isUnpaidLeave);
 
                 // Calculate total requested days (EXCLUDING Sundays for paid leave)
                 let totalRequestedDays = leaveDays.length;
@@ -723,17 +732,17 @@ export default function AdminDashboard() {
                     }
                 }
 
-                console.log('Total calendar days:', leaveDays.length, 'Weekdays for paid leave:', weekdaysCount);
+                log.info('Total calendar days:', leaveDays.length, 'Weekdays for paid leave:', weekdaysCount);
 
                 // LEAVE LIMIT ENFORCEMENT: Only deduct weekdays for paid leave
-                console.log('🔄 STARTING LEAVE LIMIT ENFORCEMENT - isPaidLeave:', isPaidLeave, 'isAnnualLeave:', isAnnualLeave, 'isMedicalLeave:', isMedicalLeave);
+                log.info('🔄 STARTING LEAVE LIMIT ENFORCEMENT - isPaidLeave:', isPaidLeave, 'isAnnualLeave:', isAnnualLeave, 'isMedicalLeave:', isMedicalLeave);
                 let paidDays = 0;
                 let unpaidDays = 0;
 
                 try {
-                    console.log('🔍 STARTING LIMIT ENFORCEMENT BLOCK');
+                    log.info('🔍 STARTING LIMIT ENFORCEMENT BLOCK');
                     if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
-                        console.log('✅ ENTERED LEAVE LIMIT CHECK - Using balance logic');
+                        log.info('✅ ENTERED LEAVE LIMIT CHECK - Using balance logic');
                         // Get actual balance from database
                         const { data: workerCheck, error: checkError } = await supabase
                             .from('worker_details')
@@ -792,10 +801,10 @@ export default function AdminDashboard() {
                 // Deduct from leave balance if it's paid leave
                 if (isPaidLeave && (isAnnualLeave || isMedicalLeave)) {
                     try {
-                        console.log('🎯 UPDATING LEAVE BALANCE - Worker:', leaveRequest.employee_id, 'Type:', isAnnualLeave ? 'ANNUAL' : 'MEDICAL', 'Days to deduct:', daysToDeduct);
+                        log.info('🎯 UPDATING LEAVE BALANCE - Worker:', leaveRequest.employee_id, 'Type:', isAnnualLeave ? 'ANNUAL' : 'MEDICAL', 'Days to deduct:', daysToDeduct);
 
                         // First, verify the worker exists and get current balance
-                        console.log('🔍 LOOKING UP WORKER:', leaveRequest.employee_id);
+                        log.info('🔍 LOOKING UP WORKER:', leaveRequest.employee_id);
                         const { data: workerCheck, error: checkError } = await supabase
                             .from('worker_details')
                             .select('employee_id, employee_name, annual_leave_balance, medical_leave_balance')
@@ -812,7 +821,7 @@ export default function AdminDashboard() {
                             throw new Error(`Worker lookup failed: ${checkError.message}`);
                         }
 
-                        console.log('✅ Worker found:', workerCheck.employee_name, 'Current balances - AL:', workerCheck.annual_leave_balance, 'MC:', workerCheck.medical_leave_balance);
+                        log.info('✅ Worker found:', workerCheck.employee_name, 'Current balances - AL:', workerCheck.annual_leave_balance, 'MC:', workerCheck.medical_leave_balance);
 
                         const currentBalance = isAnnualLeave ? workerCheck.annual_leave_balance : workerCheck.medical_leave_balance;
                         const defaultBalance = isAnnualLeave ? 10 : 14;
@@ -829,11 +838,11 @@ export default function AdminDashboard() {
                             updateData.medical_leave_balance = newBalance;
                         }
 
-                        console.log('📦 Update payload:', updateData);
-                        console.log('👤 Updating worker:', leaveRequest.employee_id);
+                        log.info('📦 Update payload:', updateData);
+                        log.info('👤 Updating worker:', leaveRequest.employee_id);
 
                         // Perform the update
-                        console.log('🔄 EXECUTING BALANCE UPDATE - Employee ID:', leaveRequest.employee_id, 'Update Data:', updateData);
+                        log.info('🔄 EXECUTING BALANCE UPDATE - Employee ID:', leaveRequest.employee_id, 'Update Data:', updateData);
                         const { data: updateResult, error: updateError } = await supabase
                             .from('worker_details')
                             .update(updateData)
@@ -1477,7 +1486,7 @@ export default function AdminDashboard() {
                 console.error('Shifts query error:', shiftsError);
             }
 
-            console.log('Found workers:', allWorkers.length);
+            log.info('Found workers:', allWorkers.length);
             console.log('Found shifts:', workerShifts?.length || 0);
 
             // Initialize all workers with default payslip configuration
@@ -1768,7 +1777,7 @@ export default function AdminDashboard() {
                 const siteIds = [...new Set(data.map(shift => shift.site_id))];
                 const shiftIds = data.map(shift => shift.id);
 
-                console.log('👥 Fetching workers for IDs:', workerIds);
+                log.info('👥 Fetching workers for IDs:', workerIds);
                 // Fetch workers from consolidated worker_details table
                 const { data: workers, error: workersError } = await supabase
                     .from('worker_details')
@@ -2078,7 +2087,7 @@ export default function AdminDashboard() {
     // Worker mutations
     const addWorkerMutation = useMutation({
         mutationFn: async (workerData) => {
-            console.log('🛠️ ADD WORKER MUTATION: Starting with data:', workerData, 'Worker type:', selectedWorkerType);
+            log.info('🛠️ ADD WORKER MUTATION: Starting with data:', workerData, 'Worker type:', selectedWorkerType);
 
             const baseWorkerData = {
                 employee_id: workerData.employee_id,
@@ -2128,7 +2137,7 @@ export default function AdminDashboard() {
                     sinda_contribution: sindaAmount
                 };
 
-                console.log('📝 Inserting Local worker data:', localWorkerData);
+                log.info('📝 Inserting Local worker data:', localWorkerData);
 
                 const { error } = await supabase
                     .from('local_worker_details')
@@ -2139,11 +2148,11 @@ export default function AdminDashboard() {
                     throw error;
                 }
 
-                console.log('✅ LOCAL WORKER SUCCESS: Worker created in local_worker_details');
+                log.info('✅ LOCAL WORKER SUCCESS: Worker created in local_worker_details');
 
             } else {
                 // Foreign worker - insert into worker_details table
-                console.log('📝 Inserting Foreign worker data:', baseWorkerData);
+                log.info('📝 Inserting Foreign worker data:', baseWorkerData);
 
                 const { error } = await supabase
                     .from('worker_details')
@@ -2154,11 +2163,11 @@ export default function AdminDashboard() {
                     throw error;
                 }
 
-                console.log('✅ FOREIGN WORKER SUCCESS: Worker created in worker_details');
+                log.info('✅ FOREIGN WORKER SUCCESS: Worker created in worker_details');
             }
         },
         onSuccess: () => {
-            console.log('🎉 ADD WORKER onSuccess: Closing dialog and refreshing');
+            log.info('🎉 ADD WORKER onSuccess: Closing dialog and refreshing');
             toast.success(`${selectedWorkerType === 'local' ? 'Local' : 'Foreign'} worker added successfully`);
             setShowAddWorkerDialog(false);
             resetWorkerForm();
@@ -2177,7 +2186,7 @@ export default function AdminDashboard() {
 
     const editWorkerMutation = useMutation({
         mutationFn: async ({ employee_id, workerData }) => {
-            console.log('🛠️ EDIT WORKER MUTATION: Starting with data:', workerData, 'Worker type:', selectedWorkerType);
+            log.info('🛠️ EDIT WORKER MUTATION: Starting with data:', workerData, 'Worker type:', selectedWorkerType);
 
             const baseUpdateData = {
                 nric_fin: workerData.nric_fin,
@@ -2192,7 +2201,8 @@ export default function AdminDashboard() {
                 annual_leave_limit: parseInt(workerData.annual_leave_limit),
                 medical_leave_limit: parseInt(workerData.medical_leave_limit),
                 annual_leave_balance: parseInt(workerData.annual_leave_balance),
-                medical_leave_balance: parseInt(workerData.medical_leave_balance)
+                medical_leave_balance: parseInt(workerData.medical_leave_balance),
+                password_hash: workerData.password
             };
 
             if (selectedWorkerType === 'local') {
@@ -2214,7 +2224,7 @@ export default function AdminDashboard() {
                     sinda_contribution: sindaAmount
                 };
 
-                console.log('📝 Updating Local worker data:', localUpdateData);
+                log.info('📝 Updating Local worker data:', localUpdateData);
 
                 const { error } = await supabase
                     .from('local_worker_details')
@@ -2226,11 +2236,11 @@ export default function AdminDashboard() {
                     throw error;
                 }
 
-                console.log('✅ LOCAL WORKER UPDATE SUCCESS');
+                log.info('✅ LOCAL WORKER UPDATE SUCCESS');
 
             } else {
                 // Update foreign worker
-                console.log('📝 Updating Foreign worker data:', baseUpdateData);
+                log.info('📝 Updating Foreign worker data:', baseUpdateData);
 
                 const { error } = await supabase
                     .from('worker_details')
@@ -2242,7 +2252,7 @@ export default function AdminDashboard() {
                     throw error;
                 }
 
-                console.log('✅ FOREIGN WORKER UPDATE SUCCESS');
+                log.info('✅ FOREIGN WORKER UPDATE SUCCESS');
             }
         },
         onSuccess: () => {
@@ -2253,6 +2263,10 @@ export default function AdminDashboard() {
             setCalculatedCPFEmployee(0);
             setCalculatedCPFEmployer(0);
             setCalculatedSINDA(0);
+            
+            // Refresh all worker data to show updated information
+            queryClient.invalidateQueries({ queryKey: ['local-workers'] });
+            queryClient.invalidateQueries({ queryKey: ['foreign-workers'] });
         },
         onError: (error) => {
             console.error('💥 EDIT WORKER onError:', error);
@@ -2466,8 +2480,8 @@ export default function AdminDashboard() {
     };
 
     const handleAddWorker = () => {
-        console.log('Add Worker button clicked');
-        console.log('Form data:', workerFormData);
+        log.info('Add Worker button clicked');
+        log.info('Form data:', workerFormData);
 
         if (!workerFormData.employee_id || !workerFormData.employee_name || !workerFormData.nric_fin ||
             !workerFormData.designation || !workerFormData.date_joined || !workerFormData.bank_account_number ||
@@ -2526,7 +2540,8 @@ export default function AdminDashboard() {
     };
 
     const handleDeleteWorker = () => {
-        if (deletePassword !== '98844') {
+        const ADMIN_DELETE_CODE = '98844'; // Centralized admin deletion code
+        if (deletePassword !== ADMIN_DELETE_CODE) {
             setDeletePasswordError('Incorrect password');
             return;
         }
@@ -2845,8 +2860,8 @@ export default function AdminDashboard() {
             let totalSunPhDays = 0;
             
             // Get all shifts for the worker in the specified date range
-            console.log('Fetching shifts for worker:', workerId, 'from:', startDate, 'to:', endDate);
-            console.log('Date range:', startDate, 'to', endDate);
+            log.info('Fetching shifts for worker:', workerId, 'from:', startDate, 'to:', endDate);
+            log.info('Date range:', startDate, 'to', endDate);
 
             const { data: workerShifts, error } = await supabase
                 .from('shifts')
@@ -2862,7 +2877,7 @@ export default function AdminDashboard() {
             }
 
             console.log('Found shifts:', workerShifts?.length || 0);
-            console.log('Shifts data:', workerShifts);
+            log.info('Shifts data:', workerShifts);
 
             // Debug: Check for leave shifts
             const leaveShifts = workerShifts?.filter(s => s.leave_type) || [];
@@ -2886,7 +2901,7 @@ export default function AdminDashboard() {
             if (leaveError) {
                 console.error('Error fetching leave requests:', leaveError);
             } else {
-                console.log('All leave requests for worker (including pending):', allLeaveRequests?.length || 0);
+                log.info('All leave requests for worker (including pending):', allLeaveRequests?.length || 0);
                 if (allLeaveRequests && allLeaveRequests.length > 0) {
                     allLeaveRequests.forEach(request => {
                         console.log('Leave request:', {
@@ -2899,7 +2914,7 @@ export default function AdminDashboard() {
                         });
                     });
                 } else {
-                    console.log('No leave requests found for this worker at all');
+                    log.info('No leave requests found for this worker at all');
                 }
             }
 
@@ -2936,7 +2951,7 @@ export default function AdminDashboard() {
             // Extract worker name from the appropriate field based on worker type
             const workerName = workerDetails.employee_name || workerDetails.name || 'Unknown Worker';
 
-            console.log('Worker details:', workerDetails, 'Worker type:', workerType);
+            log.info('Worker details:', workerDetails, 'Worker type:', workerType);
 
             // Get working days for the month
             let workingDaysData;
@@ -3097,7 +3112,7 @@ export default function AdminDashboard() {
         // Net Pay = Total Additions - Total Deductions
         const netTotalPay = totalAdditions - totalDeductions;
 
-        console.log('Local worker calculations:', {
+        log.info('Local worker calculations:', {
             cpfEmployeeDeduction,
             cpfEmployerContribution,
             sindaDeduction,
