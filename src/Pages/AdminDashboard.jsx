@@ -2002,11 +2002,27 @@ export default function AdminDashboard() {
 
     const deleteAllMutation = useMutation({
         mutationFn: async () => {
-            const { error } = await supabase
+            console.log('Deleting ALL shift history...');
+            
+            // Get count of records that will be deleted for logging
+            const { data: recordsToDelete, error: countError } = await supabase
+                .from('shifts')
+                .select('id', { count: 'exact' })
+                .neq('id', '00000000-0000-0000-0000-000000000000');
+            
+            if (countError) throw countError;
+            console.log(`About to delete ${recordsToDelete?.length || 0} shift records`);
+            
+            // Proceed with deletion
+            const { error, data } = await supabase
                 .from('shifts')
                 .delete()
-                .neq('id', '00000000-0000-0000-0000-000000000000');
+                .neq('id', '00000000-0000-0000-0000-000000000000')
+                .select();
+            
             if (error) throw error;
+            console.log('Deleted shift records:', data);
+            return data;
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['shifts'] });
@@ -2014,20 +2030,59 @@ export default function AdminDashboard() {
             setShowDeleteDialog(false);
             setPassword('');
         },
+        onError: (error) => {
+            console.error('Error deleting all shifts:', error);
+            toast.error('Failed to delete shift history');
+        }
     });
 
     const deleteShiftMutation = useMutation({
         mutationFn: async (shiftId) => {
-            const { error } = await supabase
+            if (!shiftId || shiftId === 'undefined' || shiftId === 'null') {
+                throw new Error('Invalid shift ID provided for deletion');
+            }
+            console.log('Deleting shift with ID:', shiftId);
+            console.log('Shift ID type:', typeof shiftId);
+            
+            // First, verify the shift exists
+            const { data: shiftExists, error: checkError } = await supabase
+                .from('shifts')
+                .select('id, worker_id, work_date')
+                .eq('id', shiftId)
+                .single();
+            
+            if (checkError || !shiftExists) {
+                throw new Error(`Shift not found with ID: ${shiftId}`);
+            }
+            
+            console.log('Found shift to delete:', shiftExists);
+            
+            // Now delete it
+            const { error, data } = await supabase
                 .from('shifts')
                 .delete()
-                .eq('id', shiftId);
+                .eq('id', shiftId)
+                .select();
+            
             if (error) throw error;
+            console.log('Deleted shift data:', data);
+            console.log('Number of records deleted:', data?.length || 0);
+            
+            // Ensure only one record was deleted
+            if (data && data.length > 1) {
+                throw new Error(`Unexpected: Multiple records (${data.length}) were deleted. This should not happen.`);
+            }
+            
+            return data;
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['shifts'] });
             toast.success('Shift deleted successfully');
         },
+        onError: (error) => {
+            console.error('Error deleting shift:', error);
+            toast.error(`Failed to delete shift: ${error.message}`);
+        }
     });
 
     const addSiteMutation = useMutation({
@@ -2355,22 +2410,39 @@ export default function AdminDashboard() {
     });
 
     const handleDeleteHistory = () => {
+        console.log('Delete attempt with PIN:', deletePin);
+        console.log('PIN length:', deletePin.length);
+        console.log('PIN type:', typeof deletePin);
+        console.log('Expected PIN: Kozhai@100');
+        console.log('Comparison result:', deletePin === 'Kozhai@100');
+        
         if (deletePin === 'Kozhai@100') {
             setDeletePinError('');
+            console.log('PIN correct, proceeding with deletion...');
             deleteAllMutation.mutate();
         } else {
+            console.log('PIN incorrect, showing error');
             setDeletePinError('Incorrect PIN');
         }
     };
 
     const handleIndividualDelete = () => {
+        console.log('Individual delete attempt with PIN:', individualDeletePin);
+        console.log('PIN length:', individualDeletePin.length);
+        console.log('PIN type:', typeof individualDeletePin);
+        console.log('Expected PIN: Kozhai@100');
+        console.log('Comparison result:', individualDeletePin === 'Kozhai@100');
+        console.log('Pending delete shift ID:', pendingDeleteShiftId);
+        
         if (individualDeletePin === 'Kozhai@100') {
             setIndividualDeletePinError('');
+            console.log('PIN correct, proceeding with deletion of shift:', pendingDeleteShiftId);
             deleteShiftMutation.mutate(pendingDeleteShiftId);
             setShowIndividualDeletePinDialog(false);
             setIndividualDeletePin('');
             setPendingDeleteShiftId(null);
         } else {
+            console.log('PIN incorrect, showing error');
             setIndividualDeletePinError('Incorrect PIN');
         }
     };
@@ -6077,7 +6149,12 @@ export default function AdminDashboard() {
                                 setDeletePin(e.target.value);
                                 setDeletePinError('');
                             }}
-                            onKeyDown={(e) => e.key === 'Enter' && handleDeleteHistory}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleDeleteHistory();
+                                }
+                            }}
                         />
                         {deletePinError && (
                             <p className="text-sm text-red-600">{deletePinError}</p>
@@ -6130,7 +6207,12 @@ export default function AdminDashboard() {
                                 setIndividualDeletePin(e.target.value);
                                 setIndividualDeletePinError('');
                             }}
-                            onKeyDown={(e) => e.key === 'Enter' && handleIndividualDelete}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleIndividualDelete();
+                                }
+                            }}
                         />
                         {individualDeletePinError && (
                             <p className="text-sm text-red-600">{individualDeletePinError}</p>
