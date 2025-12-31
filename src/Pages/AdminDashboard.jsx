@@ -88,16 +88,8 @@ export default function AdminDashboard() {
     const [isBulkPrinting, setIsBulkPrinting] = useState(false);
     const [logoUrl, setLogoUrl] = useState(localStorage.getItem('logoUrl') || '/Akk-logo.jpg');
     const [showLeaveHistory, setShowLeaveHistory] = useState(false);
-    const [showForeignPayslipHistory, setShowForeignPayslipHistory] = useState(false);
-    const [foreignPayslipYear, setForeignPayslipYear] = useState(String(new Date().getFullYear()));
-    
-    // Payslip History state
-    const [payslipHistory, setPayslipHistory] = useState([]);
-    const [payslipHistoryLoading, setPayslipHistoryLoading] = useState(false);
-    const [payslipHistoryFilter, setPayslipHistoryFilter] = useState('all'); // 'all', 'local', 'foreign'
-    const [payslipHistoryMonth, setPayslipHistoryMonth] = useState('all');
-    const [payslipHistoryYear, setPayslipHistoryYear] = useState(String(new Date().getFullYear()));
-    
+        
+        
     // New state for enhanced monthly payslip generation
     const [showMonthlyPayslipDialog, setShowMonthlyPayslipDialog] = useState(false);
     const [monthlyPayslipPeriod, setMonthlyPayslipPeriod] = useState({ startDate: '', endDate: '' });
@@ -1973,39 +1965,7 @@ export default function AdminDashboard() {
         enabled: !!adminEmail
     });
 
-    const {
-        data: foreignPayslipHistory = [],
-        isLoading: isLoadingForeignPayslipHistory,
-        error: foreignPayslipHistoryError
-    } = useQuery({
-        queryKey: ['foreignPayslipHistory', foreignPayslipYear],
-        queryFn: async () => {
-            if (!adminEmail) return [];
-
-            let query = supabase
-                .from('payslip_history')
-                .select('*')
-                .eq('worker_type', 'foreign')
-                .order('payslip_month', { ascending: false })
-                .order('worker_id', { ascending: true });
-
-            if (foreignPayslipYear) {
-                const yearNumber = parseInt(foreignPayslipYear, 10);
-                if (!Number.isNaN(yearNumber)) {
-                    query = query.eq('payslip_year', yearNumber);
-                }
-            }
-
-            const { data, error } = await query;
-            if (error) {
-                console.error('Error fetching foreign payslip history:', error);
-                throw error;
-            }
-            return data || [];
-        },
-        enabled: !!adminEmail && showForeignPayslipHistory
-    });
-
+    
     const prevShiftsRef = useRef([]);
 
     useEffect(() => {
@@ -4590,67 +4550,7 @@ export default function AdminDashboard() {
         return <Badge className="bg-green-600"><CheckCircle className="w-3 h-3 mr-1" />Completed</Badge>;
     };
 
-    // Payslip History Functions
-    const fetchPayslipHistory = async () => {
-        setPayslipHistoryLoading(true);
-        try {
-            let query = supabase
-                .from('payslip_history')
-                .select('*')
-                .order('created_at', { ascending: false });
-
-            // Apply filters
-            if (payslipHistoryFilter !== 'all') {
-                query = query.eq('worker_type', payslipHistoryFilter);
-            }
-
-            if (payslipHistoryYear !== 'all') {
-                query = query.eq('payslip_year', parseInt(payslipHistoryYear));
-            }
-
-            if (payslipHistoryMonth !== 'all') {
-                const [year, month] = payslipHistoryMonth.split('-');
-                query = query.eq('payslip_year', parseInt(year))
-                          .eq('payslip_month', `${year}-${String(parseInt(month)).padStart(2, '0')}-01`);
-            }
-
-            const { data, error } = await query;
-
-            if (error) throw error;
-            setPayslipHistory(data || []);
-        } catch (error) {
-            console.error('Error fetching payslip history:', error);
-            toast.error('Failed to fetch payslip history');
-        } finally {
-            setPayslipHistoryLoading(false);
-        }
-    };
-
-    const deletePayslip = async (payslipId) => {
-        if (!window.confirm('Are you sure you want to delete this payslip? This action cannot be undone.')) {
-            return;
-        }
-
-        try {
-            const { error } = await supabase
-                .from('payslip_history')
-                .delete()
-                .eq('id', payslipId);
-
-            if (error) throw error;
-            
-            toast.success('Payslip deleted successfully');
-            fetchPayslipHistory(); // Refresh the list
-        } catch (error) {
-            console.error('Error deleting payslip:', error);
-            toast.error('Failed to delete payslip');
-        }
-    };
-
-    useEffect(() => {
-        fetchPayslipHistory();
-    }, [payslipHistoryFilter, payslipHistoryMonth, payslipHistoryYear]);
-
+    
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-200">
             {/* Header */}
@@ -4720,10 +4620,6 @@ export default function AdminDashboard() {
                             <DollarSign className="w-4 h-4" />
                             Salary Report
                         </TabsTrigger>
-                        <TabsTrigger value="payslip-history" className="flex items-center gap-2">
-                            <Receipt className="w-4 h-4" />
-                            Payslip History
-                        </TabsTrigger>
                         <TabsTrigger value="worker-info" className="flex items-center gap-2">
                             <Users className="w-4 h-4" />
                             Worker Information
@@ -4754,25 +4650,6 @@ export default function AdminDashboard() {
                             >
                                 <Printer className="w-4 h-4 mr-2" />
                                 Print Timesheet & Payslip
-                            </Button>
-                            <Button
-                                onClick={() => setShowPayslipDialog(true)}
-                                className="bg-blue-600 hover:bg-blue-700"
-                            >
-                                <Download className="w-4 h-4 mr-2" />
-                                Pass out payslip
-                            </Button>
-                            <Button
-                                onClick={() => setShowMonthlyPayslipDialog(true)}
-                                disabled={generateBulkPayslips.isPending}
-                                className="bg-purple-600 hover:bg-purple-700"
-                            >
-                                {generateBulkPayslips.isPending ? (
-                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                ) : (
-                                    <Download className="w-4 h-4 mr-2" />
-                                )}
-                                Generate Monthly Payslips
                             </Button>
                             <Button
                                 onClick={() => {
@@ -5344,143 +5221,7 @@ export default function AdminDashboard() {
                         </div>
                     </TabsContent>
 
-                    {/* Payslip History Tab */}
-                    <TabsContent value="payslip-history" className="mt-6">
-                        <div className="space-y-6">
-                            <Card className="border-0 shadow-lg">
-                                <CardContent className="p-6">
-                                    <div className="flex items-center justify-between mb-6">
-                                        <div className="flex items-center gap-3">
-                                            <Receipt className="w-6 h-6 text-slate-600" />
-                                            <h3 className="text-xl font-semibold text-slate-700">Payslip History</h3>
-                                        </div>
-                                        <div className="flex gap-2">
-                                            <Select value={payslipHistoryFilter} onValueChange={setPayslipHistoryFilter}>
-                                                <SelectTrigger className="w-40">
-                                                    <SelectValue placeholder="Filter by type" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="all">All Workers</SelectItem>
-                                                    <SelectItem value="local">Local Workers</SelectItem>
-                                                    <SelectItem value="foreign">Foreign Workers</SelectItem>
-                                                </SelectContent>
-                                            </Select>
-                                            <Select value={payslipHistoryYear} onValueChange={setPayslipHistoryYear}>
-                                                <SelectTrigger className="w-32">
-                                                    <SelectValue placeholder="Year" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="all">All Years</SelectItem>
-                                                    {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i).map(year => (
-                                                        <SelectItem key={year} value={String(year)}>{year}</SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                            <Input
-                                                type="month"
-                                                value={payslipHistoryMonth}
-                                                onChange={(e) => setPayslipHistoryMonth(e.target.value)}
-                                                placeholder="Filter by month"
-                                                className="w-40"
-                                            />
-                                        </div>
-                                    </div>
-
-                                    {payslipHistoryLoading ? (
-                                        <div className="flex items-center justify-center py-10">
-                                            <Loader2 className="w-8 h-8 animate-spin text-slate-700" />
-                                        </div>
-                                    ) : payslipHistory.length === 0 ? (
-                                        <div className="text-center py-10">
-                                            <Receipt className="w-16 h-16 mx-auto text-slate-300 mb-4" />
-                                            <h4 className="text-lg font-medium text-slate-700 mb-2">No Payslips Found</h4>
-                                            <p className="text-slate-500">No payslips match the selected filters</p>
-                                        </div>
-                                    ) : (
-                                        <div className="overflow-x-auto">
-                                            <table className="w-full border-collapse border border-slate-200 text-sm">
-                                                <thead className="bg-slate-50">
-                                                    <tr>
-                                                        <th className="border border-slate-200 px-3 py-2 text-left font-medium">Worker ID</th>
-                                                        <th className="border border-slate-200 px-3 py-2 text-left font-medium">Worker Name</th>
-                                                        <th className="border border-slate-200 px-3 py-2 text-left font-medium">Type</th>
-                                                        <th className="border border-slate-200 px-3 py-2 text-left font-medium">Period</th>
-                                                        <th className="border border-slate-200 px-3 py-2 text-right font-medium">Total Additions</th>
-                                                        <th className="border border-slate-200 px-3 py-2 text-right font-medium">Total Deductions</th>
-                                                        <th className="border border-slate-200 px-3 py-2 text-right font-medium">Net Pay</th>
-                                                        <th className="border border-slate-200 px-3 py-2 text-left font-medium">Created Date</th>
-                                                        <th className="border border-slate-200 px-3 py-2 text-center font-medium">Actions</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {payslipHistory.map((payslip) => (
-                                                        <tr key={payslip.id} className="hover:bg-slate-50">
-                                                            <td className="border border-slate-200 px-3 py-2 font-mono text-xs">{payslip.worker_id}</td>
-                                                            <td className="border border-slate-200 px-3 py-2">{payslip.worker_name || 'Unknown'}</td>
-                                                            <td className="border border-slate-200 px-3 py-2">
-                                                                <Badge variant={payslip.worker_type === 'local' ? 'default' : 'secondary'}>
-                                                                    {payslip.worker_type}
-                                                                </Badge>
-                                                            </td>
-                                                            <td className="border border-slate-200 px-3 py-2">
-                                                                {new Date(payslip.payslip_month).toLocaleDateString('en-US', { 
-                                                                    year: 'numeric', 
-                                                                    month: 'short' 
-                                                                })}
-                                                            </td>
-                                                            <td className="border border-slate-200 px-3 py-2 text-right">
-                                                                ${parseFloat(payslip.total_additions || 0).toFixed(2)}
-                                                            </td>
-                                                            <td className="border border-slate-200 px-3 py-2 text-right">
-                                                                ${parseFloat(payslip.total_deductions || 0).toFixed(2)}
-                                                            </td>
-                                                            <td className="border border-slate-200 px-3 py-2 text-right font-medium">
-                                                                ${parseFloat(payslip.net_pay || 0).toFixed(2)}
-                                                            </td>
-                                                            <td className="border border-slate-200 px-3 py-2">
-                                                                {new Date(payslip.created_at).toLocaleDateString()}
-                                                            </td>
-                                                            <td className="border border-slate-200 px-3 py-2">
-                                                                <div className="flex justify-center gap-1">
-                                                                    <Button
-                                                                        size="sm"
-                                                                        variant="outline"
-                                                                        onClick={() => {
-                                                                            // Re-generate payslip for printing
-                                                                            const [year, month] = payslip.payslip_month.split('-');
-                                                                            printPayslip(
-                                                                                payslip.worker_id,
-                                                                                parseInt(month),
-                                                                                parseInt(year),
-                                                                                payslip.salary_paid_date || '',
-                                                                                payslip.custom_deductions || [],
-                                                                                payslip.bonus || '',
-                                                                                payslip.custom_additions || []
-                                                                            );
-                                                                        }}
-                                                                    >
-                                                                        <Printer className="w-3 h-3" />
-                                                                    </Button>
-                                                                    <Button
-                                                                        size="sm"
-                                                                        variant="destructive"
-                                                                        onClick={() => deletePayslip(payslip.id)}
-                                                                    >
-                                                                        <Trash2 className="w-3 h-3" />
-                                                                    </Button>
-                                                                </div>
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    )}
-                                </CardContent>
-                            </Card>
-                        </div>
-                    </TabsContent>
-
+                    
                     {/* Worker Information Tab */}
                     <TabsContent value="worker-info" className="mt-6">
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -7173,117 +6914,7 @@ export default function AdminDashboard() {
                 </DialogContent>
             </Dialog>
 
-            {/* Foreign Payslip History Dialog */}
-            <Dialog open={showForeignPayslipHistory} onOpenChange={setShowForeignPayslipHistory}>
-                <DialogContent className="max-w-5xl max-h-[80vh] overflow-y-auto">
-                    <DialogHeader>
-                        <DialogTitle>Foreign Payslip History</DialogTitle>
-                        <DialogDescription>
-                            Monthly payslip records for foreign workers (based on payslip_history table)
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <div className="mb-4 flex items-center gap-3">
-                        <label className="text-sm font-medium">Year</label>
-                        <Input
-                            type="number"
-                            className="w-24"
-                            value={foreignPayslipYear}
-                            onChange={(e) => setForeignPayslipYear(e.target.value)}
-                        />
-                    </div>
-
-                    {isLoadingForeignPayslipHistory ? (
-                        <div className="flex items-center justify-center py-10">
-                            <Loader2 className="w-8 h-8 animate-spin text-slate-700" />
-                        </div>
-                    ) : foreignPayslipHistoryError ? (
-                        <div className="text-center py-10">
-                            <AlertCircle className="w-10 h-10 mx-auto text-red-500 mb-3" />
-                            <p className="text-sm text-red-600">
-                                Failed to load payslip history. Please try again later.
-                            </p>
-                        </div>
-                    ) : !foreignPayslipHistory || foreignPayslipHistory.length === 0 ? (
-                        <div className="text-center py-10">
-                            <FileSpreadsheet className="w-16 h-16 mx-auto text-slate-300 mb-4" />
-                            <h4 className="text-lg font-medium text-slate-700 mb-2">No Payslip History</h4>
-                            <p className="text-slate-500">
-                                No foreign payslip records found for the selected year.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full border-collapse border border-slate-200 text-xs">
-                                <thead className="bg-slate-50">
-                                    <tr>
-                                        <th className="border border-slate-200 px-2 py-1 text-left">Month</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-left">Worker ID</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-left">Name</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-right">Basic</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-right">OT</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-right">Sun/PH</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-right">Allowance</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-right">Net Pay</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-center">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {foreignPayslipHistory.map((record) => {
-                                        const worker = foreignWorkers.find(w => w.employee_id === record.worker_id);
-                                        const workerName = worker?.employee_name || 'Unknown';
-                                        const monthDate = record.payslip_month ? new Date(record.payslip_month) : null;
-                                        const displayMonth = monthDate
-                                            ? format(monthDate, 'MMM yyyy')
-                                            : `${record.payslip_month}`;
-
-                                        return (
-                                            <tr key={record.id}>
-                                                <td className="border border-slate-200 px-2 py-1">{displayMonth}</td>
-                                                <td className="border border-slate-200 px-2 py-1">{record.worker_id}</td>
-                                                <td className="border border-slate-200 px-2 py-1">{workerName}</td>
-                                                <td className="border border-slate-200 px-2 py-1 text-right">
-                                                    ${formatAmount(record.basic_pay)}
-                                                </td>
-                                                <td className="border border-slate-200 px-2 py-1 text-right">
-                                                    ${formatAmount(record.ot_pay)}
-                                                </td>
-                                                <td className="border border-slate-200 px-2 py-1 text-right">
-                                                    ${formatAmount(record.sun_ph_pay)}
-                                                </td>
-                                                <td className="border border-slate-200 px-2 py-1 text-right">
-                                                    ${formatAmount(record.allowance1)}
-                                                </td>
-                                                <td className="border border-slate-200 px-2 py-1 text-right font-semibold">
-                                                    ${formatAmount(record.net_pay)}
-                                                </td>
-                                                <td className="border border-slate-200 px-2 py-1 text-center">
-                                                    <Button
-                                                        size="xs"
-                                                        className="bg-blue-600 hover:bg-blue-700 text-xs"
-                                                        onClick={() => {
-                                                            if (!record.payslip_month) return;
-                                                            const date = new Date(record.payslip_month);
-                                                            if (!Number.isFinite(date.getTime())) return;
-                                                            const year = date.getFullYear();
-                                                            const month = date.getMonth() + 1;
-                                                            printPayslip(record.worker_id, month, year, '');
-                                                        }}
-                                                    >
-                                                        <Download className="w-3 h-3 mr-1" />
-                                                        Pass out payslip
-                                                    </Button>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </DialogContent>
-            </Dialog>
-
+            
             {/* Print Payslip Dialog */}
             <Dialog open={showPayslipDialog} onOpenChange={setShowPayslipDialog}>
                 <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">

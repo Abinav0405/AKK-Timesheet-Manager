@@ -32,7 +32,6 @@ export default function WorkerPortal() {
     const [currentShift, setCurrentShift] = useState(null);
     const [isProcessing, setIsProcessing] = useState(false);
     const [showLeaveRequestDialog, setShowLeaveRequestDialog] = useState(false);
-    const [showPayslipDialog, setShowPayslipDialog] = useState(false);
     const [showPasswordDialog, setShowPasswordDialog] = useState(false);
     const [passwordData, setPasswordData] = useState({
         currentPassword: '',
@@ -140,30 +139,7 @@ export default function WorkerPortal() {
         placeholderData: { annual_leave_balance: 0, medical_leave_balance: 0 }
     });
 
-    const {
-        data: workerPayslips = [],
-        isLoading: isLoadingPayslips
-    } = useQuery({
-        queryKey: ['workerPayslips', workerId],
-        queryFn: async () => {
-            if (!workerId) return [];
-
-            const { data, error } = await supabase
-                .from('payslip_history')
-                .select('*')
-                .eq('worker_id', workerId)
-                .order('payslip_month', { ascending: false });
-
-            if (error) {
-                console.error('Error fetching worker payslips:', error);
-                throw error;
-            }
-
-            return data || [];
-        },
-        enabled: !!workerId
-    });
-
+    
     // Check authentication on component mount
     useEffect(() => {
         const workerLoggedIn = sessionStorage.getItem('workerLoggedIn');
@@ -1042,15 +1018,6 @@ export default function WorkerPortal() {
                                 variant="outline"
                                 size="sm"
                                 className="border-white/30 text-white hover:bg-white/10 bg-transparent px-2 sm:px-3"
-                                onClick={() => setShowPayslipDialog(true)}
-                            >
-                                <FileText className="w-4 h-4 sm:mr-1" />
-                                <span className="hidden lg:inline">Payslips</span>
-                            </Button>
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                className="border-white/30 text-white hover:bg-white/10 bg-transparent px-2 sm:px-3"
                                 onClick={handleLogout}
                             >
                                 <LogOut className="w-4 h-4 sm:mr-1" />
@@ -1394,75 +1361,7 @@ export default function WorkerPortal() {
                 </p>
             </footer>
 
-            {/* Payslip Dialog */}
-            <Dialog open={showPayslipDialog} onOpenChange={setShowPayslipDialog}>
-                <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
-                    <DialogHeader>
-                        <DialogTitle>Your Payslips</DialogTitle>
-                        <DialogDescription>
-                            Download or print your monthly payslips that have been issued by admin.
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    {isLoadingPayslips ? (
-                        <div className="flex items-center justify-center py-8">
-                            <Loader2 className="w-6 h-6 animate-spin text-slate-500" />
-                        </div>
-                    ) : !workerPayslips || workerPayslips.length === 0 ? (
-                        <div className="text-center py-8">
-                            <FileText className="w-10 h-10 mx-auto text-slate-300 mb-3" />
-                            <h4 className="text-sm font-medium text-slate-700 mb-1">No payslips found</h4>
-                            <p className="text-xs text-slate-500">
-                                Payslips will appear here after your salary is processed by admin.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full border-collapse border border-slate-200 text-xs">
-                                <thead className="bg-slate-50">
-                                    <tr>
-                                        <th className="border border-slate-200 px-2 py-1 text-left">Month</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-right">Total Additions</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-right">Net Pay</th>
-                                        <th className="border border-slate-200 px-2 py-1 text-center">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {workerPayslips.map((payslip) => {
-                                        const monthDate = payslip.payslip_month ? new Date(payslip.payslip_month) : null;
-                                        const displayMonth = monthDate
-                                            ? monthDate.toLocaleString('en-SG', { month: 'short', year: 'numeric' })
-                                            : payslip.payslip_month;
-
-                                        return (
-                                            <tr key={payslip.id}>
-                                                <td className="border border-slate-200 px-2 py-1">{displayMonth}</td>
-                                                <td className="border border-slate-200 px-2 py-1 text-right">
-                                                    ${Number(payslip.total_additions || 0).toFixed(2)}
-                                                </td>
-                                                <td className="border border-slate-200 px-2 py-1 text-right font-semibold">
-                                                    ${Number(payslip.net_pay || 0).toFixed(2)}
-                                                </td>
-                                                <td className="border border-slate-200 px-2 py-1 text-center">
-                                                    <Button
-                                                        size="xs"
-                                                        className="bg-blue-600 hover:bg-blue-700 text-xs"
-                                                        onClick={() => handleDownloadPayslip(payslip)}
-                                                    >
-                                                        <Download className="w-3 h-3 mr-1" />
-                                                        Download
-                                                    </Button>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </DialogContent>
-            </Dialog>
-
+            
             {/* Leave Request Dialog */}
             <Dialog open={showLeaveRequestDialog} onOpenChange={setShowLeaveRequestDialog}>
                 <DialogContent>
