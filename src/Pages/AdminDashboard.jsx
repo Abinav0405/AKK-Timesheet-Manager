@@ -100,7 +100,7 @@ export default function AdminDashboard() {
     const [shiftEditData, setShiftEditData] = useState({
         entry_time: '',
         leave_time: '',
-        breaks: [{ break_start: '', break_end: '' }],
+        breaks: [{ lunch_start: '', lunch_end: '' }],
         leave_type: '__none__'
     });
 
@@ -111,7 +111,7 @@ export default function AdminDashboard() {
         work_date: '',
         entry_time: '',
         leave_time: '',
-        breaks: [{ break_start: '', break_end: '' }],
+        breaks: [{ lunch_start: '', lunch_end: '' }],
         leave_type: '__none__'
     });
 
@@ -1916,6 +1916,12 @@ export default function AdminDashboard() {
                 }));
 
                 console.log('🔗 Merged shifts with data:', shiftsWithData.length);
+                // Debug: Check for duplicate breaks
+                shiftsWithData.forEach(shift => {
+                    if (shift.breaks && shift.breaks.length > 1) {
+                        console.log(`⚠️ Shift ${shift.id} has ${shift.breaks.length} breaks:`, shift.breaks);
+                    }
+                });
                 return shiftsWithData;
             }
 
@@ -2978,6 +2984,39 @@ export default function AdminDashboard() {
         XLSX.writeFile(workbook, filename);
     };
 
+    // Helper function to format time with date indication for multi-day shifts
+    const formatTimeWithDate = (dateTime, workDate) => {
+        if (!dateTime) return '';
+        
+        const entryDate = new Date(workDate);
+        const exitDate = new Date(dateTime);
+        
+        // Format the time
+        const timeStr = new Intl.DateTimeFormat('en-SG', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+            timeZone: 'Asia/Singapore'
+        }).format(exitDate);
+        
+        // Check if exit is on a different day than work_date
+        const entryDay = entryDate.getDate();
+        const entryMonth = entryDate.getMonth();
+        const entryYear = entryDate.getFullYear();
+        
+        const exitDay = exitDate.getDate();
+        const exitMonth = exitDate.getMonth();
+        const exitYear = exitDate.getFullYear();
+        
+        // If exit is on a different day, add date indicator
+        if (entryDay !== exitDay || entryMonth !== exitMonth || entryYear !== exitYear) {
+            const exitDateStr = `${exitDay}/${exitMonth + 1}`;
+            return `${timeStr} (${exitDateStr})`;
+        }
+        
+        return timeStr;
+    };
+
     const printTimesheetAndPayslip = async (workerId, startDate, endDate, deductions = [], salaryPaidDate = '', bonus = '', additions = []) => {
         try {
             // Extract month and year from startDate
@@ -3668,7 +3707,7 @@ export default function AdminDashboard() {
 
                 shiftDetails.push({
                     entry: shift.entry_time ? formatTime(shift.entry_time) : '',
-                    leave: shift.leave_time ? formatTime(shift.leave_time) : '',
+                    leave: shift.leave_time ? formatTimeWithDate(shift.leave_time, shift.work_date) : '',
                     lunch: (shift.breaks && shift.breaks.length > 0)
                         ? shift.breaks
                             .map((b, i) => `B${i + 1} ${b.break_start ? formatTime(b.break_start) : ''}${b.break_end ? `-${formatTime(b.break_end)}` : ''}`)
@@ -3678,6 +3717,7 @@ export default function AdminDashboard() {
                     basicHours: recalc.basicHours,
                     sundayHours: recalc.sundayHours,
                     otHours: recalc.otHours,
+                    breakHours: recalc.breakHours,
                     isLeave: false
                 });
             } else if (shift.leave_type) {
@@ -3770,13 +3810,16 @@ export default function AdminDashboard() {
             const leaveTimes = shiftDetails.map(s => s.leave).filter(t => t).join(' | ');
             const lunchTimes = shiftDetails.map(s => s.lunch).filter(t => t).join(' | ');
             const siteNames = [...new Set(shiftDetails.map(s => s.site))].filter(s => s).join(' | ');
+            
+            // Calculate total break hours for the day
+            const totalBreakHours = shiftDetails.reduce((sum, s) => sum + (s.breakHours || 0), 0);
 
             printWindow.document.write(`
                 <tr class="${isSundayDay || isHolidayDay ? 'sunday-row' : ''}">
                     <td>${day}/${String(month).padStart(2, '0')}/${year}</td>
                     <td>${entryTimes}</td>
                     <td>${leaveTimes}</td>
-                <td>${lunchTimes}</td>
+                    <td>${totalBreakHours.toFixed(2)}</td>
                     <td>${totalOtHours.toFixed(2)}</td>
                     <td>${totalBasicHours.toFixed(2)}</td>
                     <td>${totalSundayHours.toFixed(2)}</td>
@@ -4731,7 +4774,7 @@ export default function AdminDashboard() {
                                         work_date: '',
                                         entry_time: '',
                                         leave_time: '',
-                                        breaks: [{ break_start: '', break_end: '' }],
+                                        breaks: [{ lunch_start: '', lunch_end: '' }],
                                         leave_type: '__none__'
                                     });
                                     setShowCreateShiftDialog(true);
@@ -4863,21 +4906,28 @@ export default function AdminDashboard() {
                                                                         variant="outline"
                                                                         onClick={async () => {
                                                                             // Load breaks for this shift
+                                                                            console.log('Loading breaks for shift:', shift.id);
                                                                             const { data: breaks } = await supabase
                                                                                 .from('breaks')
                                                                                 .select('*')
                                                                                 .eq('shift_id', shift.id)
                                                                                 .order('break_start', { ascending: true });
+                                                                            
+                                                                            console.log('Loaded breaks from DB:', breaks);
 
                                                                             setEditingShift(shift);
+                                                                            const breaksData = breaks && breaks.length > 0 ? breaks.map(b => ({
+                                                                                lunch_start: toDateTimeLocalUtc(b.break_start),
+                                                                                lunch_end: toDateTimeLocalUtc(b.break_end)
+                                                                            })) : [{ lunch_start: '', lunch_end: '' }];
+                                                                            
+                                                                            console.log('Setting breaks data:', breaksData);
                                                                             setShiftEditData({
                                                                                 entry_time: toDateTimeLocalUtc(shift.entry_time),
                                                                                 leave_time: toDateTimeLocalUtc(shift.leave_time),
-                                                                                breaks: breaks && breaks.length > 0 ? breaks.map(b => ({
-                                                                                    break_start: toDateTimeLocalUtc(b.break_start),
-                                                                                    break_end: toDateTimeLocalUtc(b.break_end)
-                                                                                })) : [{ break_start: '', break_end: '' }],
-                                                                                leave_type: shift.leave_type || '__none__'
+                                                                                breaks: breaksData,
+                                                                                leave_type: shift.leave_type || '__none__',
+                                                                                originalBreaks: breaks // Store original breaks for comparison
                                                                             });
                                                                             setShowEditShiftDialog(true);
                                                                         }}
@@ -4944,6 +4994,15 @@ export default function AdminDashboard() {
                                                                                     Entry: {formatTime(shift.entry_time)}
                                                                                 </span>
                                                                             )}
+                                                                            {shift.breaks && shift.breaks.length > 0 && (
+                                                                                <div className="space-y-1">
+                                                                                    {shift.breaks.map((breakItem, breakIndex) => (
+                                                                                        <div key={breakIndex} className="text-xs text-slate-600">
+                                                                                            Break {breakIndex + 1}: {breakItem.break_start ? formatTime(breakItem.break_start) : 'Not set'} - {breakItem.break_end ? formatTime(breakItem.break_end) : 'Not set'}
+                                                                                        </div>
+                                                                                    ))}
+                                                                                </div>
+                                                                            )}
                                                                             {shift.leave_time && (
                                                                                 <span className="text-slate-600">
                                                                                     Exit: {formatTime(shift.leave_time)}
@@ -4951,20 +5010,25 @@ export default function AdminDashboard() {
                                                                             )}
                                                                         </div>
                                                                         {shift.has_left && (() => {
-                                                                            // Recalculate hours using the new logic for display
+                                                                            // Recalculate hours using new logic for display
                                                                             const recalc = calculateShiftHours(
                                                                                 shift.entry_time,
                                                                                 shift.leave_time,
                                                                                 shift.breaks || [],
                                                                                 shift.work_date
                                                                             );
+                                                                            // Calculate break hours from breaks if break_hours is not available
+                                                                            const breakHours = shift.break_hours !== undefined && shift.break_hours !== null 
+                                                                                ? shift.break_hours 
+                                                                                : recalc.breakHours;
+                                                                            
                                                                             return (
                                                                                 <div className="flex items-center gap-4 text-sm">
                                                                                     <span className="text-green-600 font-medium">
                                                                                         Basic: {(shift.worked_hours || 0).toFixed(2)}h
                                                                                     </span>
                                                                                     <span className="text-slate-600 font-medium">
-                                                                                        Break: {(shift.break_hours || 0).toFixed(2)}h
+                                                                                        Break: {breakHours.toFixed(2)}h
                                                                                     </span>
                                                                                     {(shift.sunday_hours || 0) > 0 && (
                                                                                         <span className="text-orange-600 font-medium">
@@ -5008,18 +5072,32 @@ export default function AdminDashboard() {
                                                                                 <p>Exit: {shift.leave_time ? formatTime(shift.leave_time) : 'Not recorded'}</p>
                                                                             </div>
                                                                         </div>
-                                                                        {shift.has_left && (
-                                                                            <div>
-                                                                                <h4 className="font-medium text-slate-700 mb-2">Hours Breakdown</h4>
-                                                                                <div className="space-y-1">
+                                                                        {shift.has_left && (() => {
+                                                                            // Recalculate hours using new logic for display
+                                                                            const recalc = calculateShiftHours(
+                                                                                shift.entry_time,
+                                                                                shift.leave_time,
+                                                                                shift.breaks || [],
+                                                                                shift.work_date
+                                                                            );
+                                                                            // Calculate break hours from breaks if break_hours is not available
+                                                                            const breakHours = shift.break_hours !== undefined && shift.break_hours !== null 
+                                                                                ? shift.break_hours 
+                                                                                : recalc.breakHours;
+                                                                            
+                                                                            return (
+                                                                                <div>
+                                                                                    <h4 className="font-medium text-slate-700 mb-2">Hours Breakdown</h4>
+                                                                                    <div className="space-y-1">
                                                                                         <p>Basic Hours: {(shift.worked_hours || 0).toFixed(2)}</p>
                                                                                         <p>Sun/PH Hours: {(shift.sunday_hours || 0).toFixed(2)}</p>
                                                                                         <p>OT Hours: {(shift.ot_hours || 0).toFixed(2)}</p>
-                                                                                        <p>Break Hours: {(shift.break_hours || 0).toFixed(2)}</p>
+                                                                                        <p>Break Hours: {breakHours.toFixed(2)}</p>
                                                                                         <p>Total Hours: {((shift.worked_hours || 0) + (shift.sunday_hours || 0) + (shift.ot_hours || 0)).toFixed(2)}</p>
+                                                                                    </div>
                                                                                 </div>
-                                                                            </div>
-                                                                        )}
+                                                                            );
+                                                                        })()}
                                                                     </div>
                                                                 </div>
                                                             )}
@@ -7580,14 +7658,14 @@ export default function AdminDashboard() {
                                         const currentBreaks = createShiftData.breaks || [];
                                         if (currentBreaks.length > 0) {
                                             const lastBreak = currentBreaks[currentBreaks.length - 1];
-                                            if (!lastBreak.break_start || !lastBreak.break_end) {
+                                            if (!lastBreak.lunch_start || !lastBreak.lunch_end) {
                                                 toast.error(
                                                     'Please fill start and end time for the last break before adding a new one'
                                                 );
                                                 return;
                                             }
                                         }
-                                        const newBreaks = [...currentBreaks, { break_start: '', break_end: '' }];
+                                        const newBreaks = [...currentBreaks, { lunch_start: '', lunch_end: '' }];
                                         setCreateShiftData({ ...createShiftData, breaks: newBreaks });
                                     }}
                                     className="text-xs"
@@ -7618,26 +7696,26 @@ export default function AdminDashboard() {
                                     </div>
                                     <div className="grid grid-cols-2 gap-2">
                                         <div className="space-y-1">
-                                            <label className="text-xs text-slate-600">Start Time</label>
+                                            <label className="text-xs text-slate-600">Break Start Time</label>
                                             <Input
                                                 type="datetime-local"
-                                                value={breakItem.break_start}
+                                                value={breakItem.lunch_start}
                                                 onChange={(e) => {
                                                     const newBreaks = [...createShiftData.breaks];
-                                                    newBreaks[index].break_start = e.target.value;
+                                                    newBreaks[index].lunch_start = e.target.value;
                                                     setCreateShiftData({ ...createShiftData, breaks: newBreaks });
                                                 }}
                                                 className="text-xs"
                                             />
                                         </div>
                                         <div className="space-y-1">
-                                            <label className="text-xs text-slate-600">End Time</label>
+                                            <label className="text-xs text-slate-600">Break End Time</label>
                                             <Input
                                                 type="datetime-local"
-                                                value={breakItem.break_end}
+                                                value={breakItem.lunch_end}
                                                 onChange={(e) => {
                                                     const newBreaks = [...createShiftData.breaks];
-                                                    newBreaks[index].break_end = e.target.value;
+                                                    newBreaks[index].lunch_end = e.target.value;
                                                     setCreateShiftData({ ...createShiftData, breaks: newBreaks });
                                                 }}
                                                 className="text-xs"
@@ -7650,8 +7728,8 @@ export default function AdminDashboard() {
                                 Total Break Hours:{' '}
                                 {(
                                     (createShiftData.breaks || []).reduce((sum, b) => {
-                                        const startIso = fromDateTimeLocalUtc(b.break_start);
-                                        const endIso = fromDateTimeLocalUtc(b.break_end);
+                                        const startIso = fromDateTimeLocalUtc(b.lunch_start);
+                                        const endIso = fromDateTimeLocalUtc(b.lunch_end);
                                         if (!startIso || !endIso) return sum;
                                         const diffMs = new Date(endIso) - new Date(startIso);
                                         if (!Number.isFinite(diffMs) || diffMs <= 0) return sum;
@@ -7727,15 +7805,15 @@ export default function AdminDashboard() {
                                 const rawBreaks = createShiftData.breaks || [];
                                 for (let i = 0; i < rawBreaks.length; i++) {
                                     const b = rawBreaks[i];
-                                    const hasStart = !!b.break_start;
-                                    const hasEnd = !!b.break_end;
+                                    const hasStart = !!b.lunch_start;
+                                    const hasEnd = !!b.lunch_end;
                                     if (hasStart !== hasEnd) {
                                         toast.error('Each break must have both start and end time');
                                         return;
                                     }
                                     if (hasStart && hasEnd) {
-                                        const startDate = new Date(b.break_start);
-                                        const endDate = new Date(b.break_end);
+                                        const startDate = new Date(b.lunch_start);
+                                        const endDate = new Date(b.lunch_end);
                                         if (
                                             !Number.isFinite(startDate.getTime()) ||
                                             !Number.isFinite(endDate.getTime()) ||
@@ -7749,8 +7827,8 @@ export default function AdminDashboard() {
 
                                 const normalizedBreaks = rawBreaks
                                     .map((b) => ({
-                                        break_start: fromDateTimeLocalUtc(b.break_start),
-                                        break_end: fromDateTimeLocalUtc(b.break_end)
+                                        break_start: fromDateTimeLocalUtc(b.lunch_start),
+                                        break_end: fromDateTimeLocalUtc(b.lunch_end)
                                     }))
                                     .filter((b) => b.break_start && b.break_end);
 
@@ -7805,6 +7883,7 @@ export default function AdminDashboard() {
                                                 worked_hours: calculations.basicHours,
                                                 sunday_hours: calculations.sundayHours,
                                                 ot_hours: calculations.otHours,
+                                                break_hours: calculations.breakHours,
                                                 leave_type:
                                                     createShiftData.leave_type === '__none__'
                                                         ? null
@@ -7832,8 +7911,8 @@ export default function AdminDashboard() {
                                             .insert(
                                                 normalizedBreaks.map((b) => ({
                                                     shift_id: insertedShift.id,
-                                                    break_start: b.break_start,
-                                                    break_end: b.break_end
+                                                    break_start: b.lunch_start,
+                                                    break_end: b.lunch_end
                                                 }))
                                             );
 
@@ -7901,12 +7980,12 @@ export default function AdminDashboard() {
                                                 const currentBreaks = shiftEditData.breaks || [];
                                                 if (currentBreaks.length > 0) {
                                                     const lastBreak = currentBreaks[currentBreaks.length - 1];
-                                                    if (!lastBreak.break_start || !lastBreak.break_end) {
+                                                    if (!lastBreak.lunch_start || !lastBreak.lunch_end) {
                                                         toast.error('Please fill start and end time for the last break before adding a new one');
                                                         return;
                                                     }
                                                 }
-                                                const newBreaks = [...currentBreaks, { break_start: '', break_end: '' }];
+                                                const newBreaks = [...currentBreaks, { lunch_start: '', lunch_end: '' }];
                                                 setShiftEditData({ ...shiftEditData, breaks: newBreaks });
                                             }}
                                             className="text-xs"
@@ -7935,26 +8014,26 @@ export default function AdminDashboard() {
                                             </div>
                                             <div className="grid grid-cols-2 gap-2">
                                                 <div className="space-y-1">
-                                                    <label className="text-xs text-slate-600">Start Time</label>
+                                                    <label className="text-xs text-slate-600">Break Start Time</label>
                                                     <Input
                                                         type="datetime-local"
-                                                        value={breakItem.break_start}
+                                                        value={breakItem.lunch_start}
                                                         onChange={(e) => {
                                                             const newBreaks = [...shiftEditData.breaks];
-                                                            newBreaks[index].break_start = e.target.value;
+                                                            newBreaks[index].lunch_start = e.target.value;
                                                             setShiftEditData({ ...shiftEditData, breaks: newBreaks });
                                                         }}
                                                         className="text-xs"
                                                     />
                                                 </div>
                                                 <div className="space-y-1">
-                                                    <label className="text-xs text-slate-600">End Time</label>
+                                                    <label className="text-xs text-slate-600">Break End Time</label>
                                                     <Input
                                                         type="datetime-local"
-                                                        value={breakItem.break_end}
+                                                        value={breakItem.lunch_end}
                                                         onChange={(e) => {
                                                             const newBreaks = [...shiftEditData.breaks];
-                                                            newBreaks[index].break_end = e.target.value;
+                                                            newBreaks[index].lunch_end = e.target.value;
                                                             setShiftEditData({ ...shiftEditData, breaks: newBreaks });
                                                         }}
                                                         className="text-xs"
@@ -7966,8 +8045,8 @@ export default function AdminDashboard() {
                                     <div className="text-right text-xs text-slate-600">
                                         Total Break Hours: {(
                                             (shiftEditData.breaks || []).reduce((sum, b) => {
-                                                const startIso = fromDateTimeLocalUtc(b.break_start);
-                                                const endIso = fromDateTimeLocalUtc(b.break_end);
+                                                const startIso = fromDateTimeLocalUtc(b.lunch_start);
+                                                const endIso = fromDateTimeLocalUtc(b.lunch_end);
                                                 if (!startIso || !endIso) return sum;
                                                 const diffMs = new Date(endIso) - new Date(startIso);
                                                 if (!Number.isFinite(diffMs) || diffMs <= 0) return sum;
@@ -8027,18 +8106,87 @@ export default function AdminDashboard() {
                                             return;
                                         }
 
+                                        // Function to compare breaks arrays
+                                        const breaksEqual = (formBreaks, dbBreaks) => {
+                                            console.log('Comparing breaks:');
+                                            console.log('Form breaks length:', formBreaks.length);
+                                            console.log('DB breaks length:', dbBreaks.length);
+                                            
+                                            if (formBreaks.length !== dbBreaks.length) {
+                                                console.log('Length mismatch - breaks changed');
+                                                return false;
+                                            }
+                                            
+                                            const equal = formBreaks.every((formBreak, index) => {
+                                                const dbBreak = dbBreaks[index];
+                                                
+                                                console.log(`Processing break ${index}:`, {
+                                                    formBreak: formBreak,
+                                                    dbBreak: dbBreak
+                                                });
+                                                
+                                                const formStart = new Date(fromDateTimeLocalUtc(formBreak.lunch_start));
+                                                const formEnd = new Date(fromDateTimeLocalUtc(formBreak.lunch_end));
+                                                const dbStart = new Date(dbBreak.break_start);
+                                                const dbEnd = new Date(dbBreak.break_end);
+                                                
+                                                console.log(`Converted dates:`, {
+                                                    formStart,
+                                                    formEnd,
+                                                    dbStart,
+                                                    dbEnd,
+                                                    formStartType: typeof formStart,
+                                                    formEndType: typeof formEnd
+                                                });
+                                                
+                                                // Handle invalid dates - check if it's a valid Date object
+                                                const formStartValid = formStart instanceof Date && !isNaN(formStart.getTime());
+                                                const formEndValid = formEnd instanceof Date && !isNaN(formEnd.getTime());
+                                                const dbStartValid = !isNaN(dbStart.getTime());
+                                                const dbEndValid = !isNaN(dbEnd.getTime());
+                                                
+                                                if (!formStartValid || !formEndValid || !dbStartValid || !dbEndValid) {
+                                                    console.log(`Break ${index}: Invalid date detected - formStartValid: ${formStartValid}, formEndValid: ${formEndValid}, dbStartValid: ${dbStartValid}, dbEndValid: ${dbEndValid}`);
+                                                    return false;
+                                                }
+                                                
+                                                const startMatch = formStart.getTime() === dbStart.getTime();
+                                                const endMatch = formEnd.getTime() === dbEnd.getTime();
+                                                
+                                                console.log(`Break ${index}: Form ${formStart.toISOString()} - ${formEnd.toISOString()}, DB ${dbStart.toISOString()} - ${dbEnd.toISOString()}`);
+                                                console.log(`Start match: ${startMatch}, End match: ${endMatch}`);
+                                                
+                                                return startMatch && endMatch;
+                                            });
+                                            
+                                            console.log('Breaks equal result:', equal);
+                                            return equal;
+                                        };
+
                                         const rawBreaks = shiftEditData.breaks || [];
+                                        const originalBreaks = shiftEditData.originalBreaks || [];
+                                        console.log('Raw breaks from form:', rawBreaks);
+                                        console.log('Original breaks from DB:', originalBreaks);
+                                        
+                                        // Check if breaks have changed
+                                        const breaksChanged = !breaksEqual(rawBreaks, originalBreaks);
+                                        console.log('Breaks changed:', breaksChanged);
+                                        
+                                        if (!breaksChanged) {
+                                            console.log('Breaks unchanged, skipping break update');
+                                        }
+                                        
                                         for (let i = 0; i < rawBreaks.length; i++) {
                                             const b = rawBreaks[i];
-                                            const hasStart = !!b.break_start;
-                                            const hasEnd = !!b.break_end;
+                                            const hasStart = !!b.lunch_start;
+                                            const hasEnd = !!b.lunch_end;
                                             if (hasStart !== hasEnd) {
                                                 toast.error('Each break must have both start and end time');
                                                 return;
                                             }
                                             if (hasStart && hasEnd) {
-                                                const startDate = new Date(b.break_start);
-                                                const endDate = new Date(b.break_end);
+                                                const startDate = new Date(b.lunch_start);
+                                                const endDate = new Date(b.lunch_end);
                                                 if (!Number.isFinite(startDate.getTime()) || !Number.isFinite(endDate.getTime()) || endDate <= startDate) {
                                                     toast.error('Break end time must be after start time');
                                                     return;
@@ -8048,10 +8196,12 @@ export default function AdminDashboard() {
 
                                         const normalizedBreaks = rawBreaks
                                             .map((b) => ({
-                                                break_start: fromDateTimeLocalUtc(b.break_start),
-                                                break_end: fromDateTimeLocalUtc(b.break_end)
+                                                break_start: fromDateTimeLocalUtc(b.lunch_start),
+                                                break_end: fromDateTimeLocalUtc(b.lunch_end)
                                             }))
                                             .filter((b) => b.break_start && b.break_end);
+                                        
+                                        console.log('Normalized breaks to save:', normalizedBreaks);
 
                                         const isCompleted = !!leaveTimeIso;
                                         const calculations = isCompleted
@@ -8067,6 +8217,7 @@ export default function AdminDashboard() {
                                                 worked_hours: calculations.basicHours,
                                                 sunday_hours: calculations.sundayHours,
                                                 ot_hours: calculations.otHours,
+                                                break_hours: calculations.breakHours,
                                                 has_left: isCompleted
                                             })
                                             .eq('id', editingShift.id);
@@ -8077,33 +8228,126 @@ export default function AdminDashboard() {
                                             return;
                                         }
 
-                                        const { error: deleteBreaksError } = await supabase
-                                            .from('breaks')
-                                            .delete()
-                                            .eq('shift_id', editingShift.id);
-
-                                        if (deleteBreaksError) {
-                                            toast.error('Failed to update breaks');
-                                            console.error(deleteBreaksError);
-                                            return;
-                                        }
-
-                                        if (normalizedBreaks.length > 0) {
-                                            const { error: insertBreaksError } = await supabase
+                                        // Only update breaks if they have changed
+                                        if (breaksChanged) {
+                                            console.log('🚨 STARTING BREAK UPDATE - This should be the ONLY break operation!');
+                                            console.log('🚨 Shift ID:', editingShift.id);
+                                            console.log('🚨 Normalized breaks to save:', normalizedBreaks.length);
+                                            
+                                            // First, verify current breaks in database
+                                            const { data: currentBreaks, error: verifyError } = await supabase
                                                 .from('breaks')
-                                                .insert(
-                                                    normalizedBreaks.map((b) => ({
-                                                        shift_id: editingShift.id,
-                                                        break_start: b.break_start,
-                                                        break_end: b.break_end
-                                                    }))
-                                                );
-
-                                            if (insertBreaksError) {
-                                                toast.error('Failed to update breaks');
-                                                console.error(insertBreaksError);
+                                                .select('*')
+                                                .eq('shift_id', editingShift.id);
+                                            
+                                            if (verifyError) {
+                                                console.error('🚨 Error verifying current breaks:', verifyError);
+                                                toast.error('Failed to verify breaks');
                                                 return;
                                             }
+                                            
+                                            console.log('🚨 Current breaks in DB before delete:', currentBreaks?.length || 0);
+                                            console.log('🚨 Current breaks details:', currentBreaks);
+                                            
+                                            // Delete all existing breaks
+                                            console.log('🚨 DELETING ALL BREAKS for shift:', editingShift.id);
+                                            
+                                            // Test delete permissions directly
+                                            console.log('🚨 Testing delete permissions...');
+                                            const { data: allBreaksForTest, error: fetchError } = await supabase
+                                                .from('breaks')
+                                                .select('id, shift_id')
+                                                .eq('shift_id', editingShift.id);
+                                            
+                                            console.log('🚨 All breaks for test:', allBreaksForTest);
+                                            console.log('🚨 Fetch error:', fetchError);
+                                            
+                                            if (allBreaksForTest && allBreaksForTest.length > 0) {
+                                                console.log('🚨 Attempting to delete first break by ID:', allBreaksForTest[0].id);
+                                                const { error: singleDeleteError, count: singleDeleteCount } = await supabase
+                                                    .from('breaks')
+                                                    .delete({ count: 'exact' })
+                                                    .eq('id', allBreaksForTest[0].id);
+                                                
+                                                console.log('🚨 Single delete result:', { singleDeleteError, singleDeleteCount });
+                                                
+                                                // Check if it's actually deleted
+                                                const { data: checkAfterSingleDelete } = await supabase
+                                                    .from('breaks')
+                                                    .select('id')
+                                                    .eq('id', allBreaksForTest[0].id);
+                                                
+                                                console.log('🚨 Break still exists after single delete:', checkAfterSingleDelete);
+                                            }
+                                            
+                                            const { error: deleteBreaksError, count: deleteCount } = await supabase
+                                                .from('breaks')
+                                                .delete({ count: 'exact' })
+                                                .eq('shift_id', editingShift.id);
+
+                                            if (deleteBreaksError) {
+                                                console.error('🚨 Delete error:', deleteBreaksError);
+                                                toast.error('Failed to update breaks');
+                                                return;
+                                            }
+                                            
+                                            console.log('🚨 Delete operation completed. Records deleted:', deleteCount);
+                                            
+                                            // Wait a moment to ensure delete completes
+                                            await new Promise(resolve => setTimeout(resolve, 100));
+                                            
+                                            // Verify deletion
+                                            const { data: deletedCheck, error: deletedCheckError } = await supabase
+                                                .from('breaks')
+                                                .select('*')
+                                                .eq('shift_id', editingShift.id);
+                                            
+                                            if (deletedCheckError) {
+                                                console.error('🚨 Error checking deletion:', deletedCheckError);
+                                            } else {
+                                                console.log('🚨 Breaks remaining after delete:', deletedCheck?.length || 0);
+                                                if (deletedCheck && deletedCheck.length > 0) {
+                                                    console.error('🚨🚨🚨 DELETE FAILED! Breaks still exist:', deletedCheck);
+                                                }
+                                            }
+
+                                            if (normalizedBreaks.length > 0) {
+                                                console.log('🚨 INSERTING BREAKS:', normalizedBreaks);
+                                                const { error: insertBreaksError, data: insertedData } = await supabase
+                                                    .from('breaks')
+                                                    .insert(
+                                                        normalizedBreaks.map((b) => ({
+                                                            shift_id: editingShift.id,
+                                                            break_start: b.break_start,
+                                                            break_end: b.break_end
+                                                        }))
+                                                    )
+                                                    .select();
+
+                                                if (insertBreaksError) {
+                                                    console.error('🚨 Insert error:', insertBreaksError);
+                                                    toast.error('Failed to update breaks');
+                                                    return;
+                                                }
+                                                console.log('🚨 Insert completed. Inserted data:', insertedData);
+                                                
+                                                // Final verification
+                                                const { data: finalCheck, error: finalCheckError } = await supabase
+                                                    .from('breaks')
+                                                    .select('*')
+                                                    .eq('shift_id', editingShift.id);
+                                                
+                                                if (finalCheckError) {
+                                                    console.error('🚨 Final check error:', finalCheckError);
+                                                } else {
+                                                    console.log('🚨 FINAL BREAK COUNT:', finalCheck?.length || 0);
+                                                    console.log('🚨 FINAL BREAKS:', finalCheck);
+                                                }
+                                            } else {
+                                                console.log('🚨 No breaks to insert - shift should have 0 breaks');
+                                            }
+                                            
+                                            console.log('🚨 BREAK UPDATE COMPLETED');
                                         }
 
                                         toast.success('Shift updated successfully');

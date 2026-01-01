@@ -148,43 +148,69 @@ export default function WorkerPortal() {
         }
     }, []);
 
-    // Fetch current shift (today's shifts)
+    // Fetch current shift (today's shifts and any active shifts from previous days)
     const { data: todaysShifts, refetch: refetchShift, isLoading: isLoadingShift } = useQuery({
         queryKey: ['currentShift', workerId],
         queryFn: async () => {
             if (!workerId) return [];
 
             const today = new Date().toISOString().split('T')[0];
-            console.log('Fetching todays shifts for worker:', workerId, 'date:', today);
+            console.log('Fetching shifts for worker:', workerId, 'date:', today);
 
-            const { data, error } = await supabase
+            // First, fetch today's shifts
+            const { data: todayShifts, error: todayError } = await supabase
                 .from('shifts')
                 .select('*')
                 .eq('worker_id', workerId)
                 .eq('work_date', today)
                 .order('created_at', { ascending: false });
 
-            if (error) {
-                console.error('Error fetching todays shifts:', error);
-                throw error;
+            if (todayError) {
+                console.error('Error fetching todays shifts:', todayError);
+                throw todayError;
             }
 
+            // Also check for any active shifts from previous days (where has_left is false)
+            const { data: activePreviousShifts, error: previousError } = await supabase
+                .from('shifts')
+                .select('*')
+                .eq('worker_id', workerId)
+                .eq('has_left', false)
+                .lt('work_date', today)  // Only previous days
+                .order('created_at', { ascending: false });
+
+            if (previousError) {
+                console.error('Error fetching previous active shifts:', previousError);
+                throw previousError;
+            }
+
+            // Combine both sets of shifts
+            const allShifts = [...(todayShifts || []), ...(activePreviousShifts || [])];
+            
+            // Remove duplicates (in case a shift appears in both queries)
+            const uniqueShifts = allShifts.filter((shift, index, self) => 
+                index === self.findIndex(s => s.id === shift.id)
+            );
+
+            // Sort by creation date (most recent first)
+            uniqueShifts.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
             // If we have shifts, fetch site data separately for each
-            if (data && data.length > 0) {
-                const siteIds = [...new Set(data.map(shift => shift.site_id))];
+            if (uniqueShifts.length > 0) {
+                const siteIds = [...new Set(uniqueShifts.map(shift => shift.site_id))];
                 const { data: sites } = await supabase
                     .from('sites')
                     .select('id, site_name, latitude, longitude')
                     .in('id', siteIds);
 
                 // Merge site data into shifts
-                data.forEach(shift => {
+                uniqueShifts.forEach(shift => {
                     shift.sites = sites?.find(s => s.id === shift.site_id) || null;
                 });
             }
 
-            console.log('Todays shifts data:', data);
-            return data || [];
+            console.log('All shifts data:', uniqueShifts);
+            return uniqueShifts;
         },
         refetchInterval: 5000, // Refresh every 5 seconds
         enabled: !!workerId
@@ -192,10 +218,19 @@ export default function WorkerPortal() {
 
     useEffect(() => {
         if (todaysShifts && todaysShifts.length > 0) {
-            // Get the most recent active shift (not completed)
-            const activeShift = todaysShifts.find(shift => !shift.has_left) || todaysShifts[0];
-            setCurrentShift(activeShift);
+            // First, try to find any active shift (has_left is false) from any day
+            const activeShift = todaysShifts.find(shift => !shift.has_left);
+            
+            if (activeShift) {
+                console.log('Found active shift:', activeShift);
+                setCurrentShift(activeShift);
+            } else {
+                // If no active shifts, get the most recent shift
+                console.log('No active shifts found, using most recent shift');
+                setCurrentShift(todaysShifts[0]);
+            }
         } else {
+            console.log('No shifts found');
             setCurrentShift(null);
         }
     }, [todaysShifts]);
@@ -219,24 +254,30 @@ export default function WorkerPortal() {
             const workerIdField = 'worker_id';
 
             if (activeScan === 'entry') {
-                // First, check if there's an existing active shift
-                console.log('Checking for existing shifts with:', { workerIdField, workerIdValue, today });
+                // First, check if there's an existing active shift from ANY day
+                console.log('Checking for existing active shifts with:', { workerIdField, workerIdValue });
                 const { data: existingShift, error: shiftError } = await supabase
                     .from('shifts')
                     .select('*')
                     .eq(workerIdField, workerIdValue)
                     .eq('has_left', false)
-                    .eq('work_date', today)
                     .maybeSingle();
 
                 if (shiftError) {
                     console.error('Error checking for existing shifts:', shiftError);
                     throw shiftError;
                 }
-                console.log('Existing shift check result:', existingShift);
+                console.log('Existing active shift check result:', existingShift);
 
                 if (existingShift) {
-                    toast.error("You already have an active shift");
+                    const shiftDate = new Date(existingShift.work_date).toLocaleDateString();
+                    const todayDate = new Date().toLocaleDateString();
+                    
+                    if (shiftDate === todayDate) {
+                        toast.error("You already have an active shift for today");
+                    } else {
+                        toast.error(`You have an active shift from ${shiftDate}. Please complete it before starting a new shift.`);
+                    }
                     setIsProcessing(false);
                     setActiveScan(null);
                     return;
@@ -434,14 +475,17 @@ export default function WorkerPortal() {
     };
 
     const getShiftStatus = () => {
+        console.log('Getting shift status for currentShift:', currentShift);
         if (!currentShift) return { status: 'not_started', text: 'Not clocked in' };
 
         if (!currentShift.has_left) {
+            console.log('Shift is active (has_left is false)');
             const hasOngoingBreak = (shiftBreaks || []).some(b => b.break_start && !b.break_end);
             if (hasOngoingBreak) return { status: 'on_lunch', text: 'On break' };
             return { status: 'working', text: 'Working' };
         }
 
+        console.log('Shift is completed (has_left is true)');
         return { status: 'completed', text: 'Shift completed' };
     };
 
@@ -479,6 +523,18 @@ export default function WorkerPortal() {
 
     const shiftStatus = getShiftStatus();
     const canClockOut = currentShift && currentShift.entry_time && !currentShift.has_left;
+    
+    // Add logging for debugging
+    useEffect(() => {
+        console.log('canClockOut check:', {
+            hasCurrentShift: !!currentShift,
+            hasEntryTime: !!currentShift?.entry_time,
+            hasLeft: currentShift?.has_left,
+            canClockOut,
+            shiftDate: currentShift?.work_date,
+            today: new Date().toISOString().split('T')[0]
+        });
+    }, [currentShift, canClockOut]);
 
     const handleDownloadPayslip = async (payslip) => {
         try {
