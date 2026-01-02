@@ -154,7 +154,13 @@ export default function WorkerPortal() {
         queryFn: async () => {
             if (!workerId) return [];
 
-            const today = new Date().toISOString().split('T')[0];
+            // Use Singapore timezone to get correct date (fixes midnight shift date issue)
+            const today = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Singapore',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }).format(new Date());
             console.log('Fetching shifts for worker:', workerId, 'date:', today);
 
             // First, fetch today's shifts
@@ -246,7 +252,13 @@ export default function WorkerPortal() {
 
         try {
             const now = new Date().toISOString();
-            const today = new Date().toISOString().split('T')[0];
+            // Use Singapore timezone to get correct date (fixes midnight shift date issue)
+            const today = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Singapore',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }).format(new Date());
             
             // Handle both string and numeric IDs
             const workerIdValue = workerType === 'local' ? workerId : parseInt(workerId, 10);
@@ -532,7 +544,13 @@ export default function WorkerPortal() {
             hasLeft: currentShift?.has_left,
             canClockOut,
             shiftDate: currentShift?.work_date,
-            today: new Date().toISOString().split('T')[0]
+            // Use Singapore timezone to get correct date (fixes midnight shift date issue)
+            today: new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Singapore',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }).format(new Date())
         });
     }, [currentShift, canClockOut]);
 

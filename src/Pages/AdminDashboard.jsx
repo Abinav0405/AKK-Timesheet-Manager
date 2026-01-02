@@ -29,7 +29,7 @@ import * as XLSX from 'xlsx';
 import QRCode from "qrcode";
 import { toast } from "sonner";
 import { sendBrowserNotification } from "@/lib/emailNotification";
-import { formatTime, formatDate, isSunday, isPublicHoliday, calculateShiftHours } from "@/lib/timeUtils";
+import { formatTime, formatDate, isSunday, isPublicHoliday, calculateShiftHours, getWorkDateFromDateTime } from "@/lib/timeUtils";
 import {
     calculateAge,
     getCPFEmployeeRate,
@@ -7802,6 +7802,11 @@ export default function AdminDashboard() {
                                     return;
                                 }
 
+                                // Automatically derive work_date from entry_time in Singapore timezone
+                                // This fixes the issue where shifts starting at 00:24 are marked as previous day
+                                const workDateFromEntry = getWorkDateFromDateTime(entryTimeIso);
+                                const workDate = workDateFromEntry || createShiftData.work_date;
+
                                 const rawBreaks = createShiftData.breaks || [];
                                 for (let i = 0; i < rawBreaks.length; i++) {
                                     const b = rawBreaks[i];
@@ -7838,7 +7843,7 @@ export default function AdminDashboard() {
                                           entryTimeIso,
                                           leaveTimeIso,
                                           normalizedBreaks,
-                                          createShiftData.work_date
+                                          workDate
                                       )
                                     : { basicHours: 0, sundayHours: 0, otHours: 0 };
 
@@ -7876,7 +7881,7 @@ export default function AdminDashboard() {
                                             {
                                                 worker_id: workerId,
                                                 site_id: createShiftData.site_id ? createShiftData.site_id : null,
-                                                work_date: createShiftData.work_date,
+                                                work_date: workDate,
                                                 entry_time: entryTimeIso,
                                                 leave_time: leaveTimeIso,
                                                 has_left: isCompleted,
@@ -8106,6 +8111,11 @@ export default function AdminDashboard() {
                                             return;
                                         }
 
+                                        // Automatically derive work_date from entry_time in Singapore timezone
+                                        // This fixes the issue where shifts starting at 00:24 are marked as previous day
+                                        const workDateFromEntry = getWorkDateFromDateTime(entryTimeIso);
+                                        const workDate = workDateFromEntry || editingShift.work_date;
+
                                         // Function to compare breaks arrays
                                         const breaksEqual = (formBreaks, dbBreaks) => {
                                             console.log('Comparing breaks:');
@@ -8205,12 +8215,13 @@ export default function AdminDashboard() {
 
                                         const isCompleted = !!leaveTimeIso;
                                         const calculations = isCompleted
-                                            ? calculateShiftHours(entryTimeIso, leaveTimeIso, normalizedBreaks, editingShift.work_date)
+                                            ? calculateShiftHours(entryTimeIso, leaveTimeIso, normalizedBreaks, workDate)
                                             : { basicHours: 0, sundayHours: 0, otHours: 0 };
 
                                         const { error: shiftError } = await supabase
                                             .from('shifts')
                                             .update({
+                                                work_date: workDate,
                                                 entry_time: entryTimeIso,
                                                 leave_time: leaveTimeIso,
                                                 leave_type: shiftEditData.leave_type === '__none__' ? null : shiftEditData.leave_type,

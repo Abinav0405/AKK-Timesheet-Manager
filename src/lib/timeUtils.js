@@ -13,6 +13,23 @@ export const SINGAPORE_PUBLIC_HOLIDAYS_2025 = [
     '2025-12-25', // Christmas Day
 ];
 
+// Singapore Public Holidays for 2026
+export const SINGAPORE_PUBLIC_HOLIDAYS_2026 = [
+    '2026-01-01', // New Year's Day - Thursday
+    '2026-02-17', // Chinese New Year - Tuesday
+    '2026-02-18', // Chinese New Year - Wednesday
+    '2026-03-21', // Hari Raya Puasa - Saturday
+    '2026-04-03', // Good Friday - Friday
+    '2026-05-01', // Labour Day - Friday
+    '2026-05-27', // Hari Raya Haji - Wednesday
+    '2026-05-31', // Vesak Day - Sunday
+    '2026-08-09', // National Day - Sunday
+    '2026-08-10', // National Day (compensatory) - Monday
+    '2026-11-08', // Deepavali - Sunday
+    '2026-11-09', // Deepavali (compensatory) - Monday
+    '2026-12-25', // Christmas Day - Friday
+];
+
 /**
  * Check if a date is a Sunday
  */
@@ -22,10 +39,22 @@ export function isSunday(date) {
 
 /**
  * Check if a date is a public holiday
+ * Automatically checks both 2025 and 2026 holidays based on the date's year
  */
-export function isPublicHoliday(date, year = 2025) {
+export function isPublicHoliday(date, year = null) {
     const dateStr = date.toISOString().split('T')[0];
-    return SINGAPORE_PUBLIC_HOLIDAYS_2025.includes(dateStr);
+    const dateYear = year || new Date(date).getFullYear();
+    
+    // Check the appropriate year's holidays
+    if (dateYear === 2025) {
+        return SINGAPORE_PUBLIC_HOLIDAYS_2025.includes(dateStr);
+    } else if (dateYear === 2026) {
+        return SINGAPORE_PUBLIC_HOLIDAYS_2026.includes(dateStr);
+    }
+    
+    // For other years, check both (for backward compatibility)
+    return SINGAPORE_PUBLIC_HOLIDAYS_2025.includes(dateStr) || 
+           SINGAPORE_PUBLIC_HOLIDAYS_2026.includes(dateStr);
 }
 
 /**
@@ -195,6 +224,39 @@ export function formatDate(date) {
         year: 'numeric',
         timeZone: 'Asia/Singapore'
     });
+}
+
+/**
+ * Get today's date in Singapore timezone (YYYY-MM-DD format)
+ * This ensures correct date calculation for shifts that start after midnight
+ */
+export function getTodaySingapore() {
+    const now = new Date();
+    // Convert to Singapore timezone and get date string
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Singapore',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).format(now);
+}
+
+/**
+ * Extract work date from a datetime string in Singapore timezone (YYYY-MM-DD format)
+ * This ensures correct date calculation for shifts that start after midnight
+ * @param {string} dateTime - ISO datetime string
+ * @returns {string} Date string in YYYY-MM-DD format
+ */
+export function getWorkDateFromDateTime(dateTime) {
+    if (!dateTime) return null;
+    const date = new Date(dateTime);
+    // Convert to Singapore timezone and get date string
+    return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Singapore',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).format(date);
 }
 
 /**
