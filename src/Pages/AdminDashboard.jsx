@@ -3221,6 +3221,21 @@ export default function AdminDashboard() {
                 }
             });
 
+        // NEW LOGIC: Add 8 basic hours for public holidays with no shifts
+        // Generate all days in the month and check for public holidays without shifts
+        const totalDaysInMonth = new Date(year, month, 0).getDate();
+        const processedDates = new Set(workerShifts?.map(shift => shift.work_date) || []);
+        
+        for (let day = 1; day <= totalDaysInMonth; day++) {
+            const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            const date = new Date(dateStr);
+            
+            // Check if it's a public holiday and has no shifts
+            if (isPublicHoliday(date) && !processedDates.has(dateStr)) {
+                monthlyBasicHours += 8; // Add 8 basic hours for PH with no shifts
+            }
+        }
+
         totalWorkedHours = totalWorkedHours + monthlyOtHours + monthlySundayHours;
         totalSunPhHours = monthlySundayHours;
         totalBasicDays = monthlyBasicHours / 8;
@@ -3802,6 +3817,28 @@ export default function AdminDashboard() {
             shiftDetails = shiftDetails.map(s => ({ ...s, isLeave: undefined }));
             totalWorkedHours = totalBasicHours + totalSundayHours + totalOtHours;
         }
+
+        // NEW LOGIC: Handle public holidays with no shifts
+        if (isHolidayDay && dayShifts.length === 0) {
+            // Public holiday with no shifts - give 8 basic hours automatically
+            totalBasicHours = 8;
+            totalSundayHours = 0;
+            totalOtHours = 0;
+            totalWorkedHours = 8;
+            
+            shiftDetails.push({
+                entry: '',
+                leave: '',
+                lunch: '',
+                site: '',
+                basicHours: 8,
+                sundayHours: 0,
+                otHours: 0,
+                breakHours: 0,
+                isLeave: false
+            });
+        }
+
             const basicDays = totalBasicHours / 8;
             const sundayDays = totalSundayHours / 8;
 

@@ -99,6 +99,14 @@ export function getNormalWorkEndTime(date) {
 /**
  * Calculate worked hours, OT hours, and sunday hours according to the new rules
  * Supports both old lunch_start/lunch_end format and new breaks array format
+ * 
+ * New Logic Implementation:
+ * - Sunday: ❌ worked → 0 hours
+ * - Sunday: ✅ worked → Sunday hours only
+ * - PH: ❌ worked → 8 basic hours must be given
+ * - PH: ✅ worked → Sunday/PH hours
+ * - Normal: ❌ worked → 0 hours
+ * - Normal: ✅ worked → Basic + OT
  */
 export function calculateShiftHours(entryTime, leaveTime, breaksOrLunchStart = [], workDate, lunchEnd = null) {
     if (!entryTime || !leaveTime) {
@@ -146,18 +154,52 @@ export function calculateShiftHours(entryTime, leaveTime, breaksOrLunchStart = [
     let sundayHours = 0;
     let basicDay = 0;
 
-    if (isSunday || isHoliday) {
-        // All net worked hours go to Sunday/PH hours
-        sundayHours = netWorkedHours;
-        basicHours = 0;
-        otHours = 0;
-        basicDay = 0;
+    // Implement the new logic based on day type and work status
+    if (isSunday) {
+        // Sunday logic
+        if (netWorkedHours > 0) {
+            // Sunday: ✅ worked → Sunday hours only
+            sundayHours = netWorkedHours;
+            basicHours = 0;
+            otHours = 0;
+            basicDay = 0;
+        } else {
+            // Sunday: ❌ worked → 0 hours
+            basicHours = 0;
+            sundayHours = 0;
+            otHours = 0;
+            basicDay = 0;
+        }
+    } else if (isHoliday) {
+        // Public Holiday logic
+        if (netWorkedHours > 0) {
+            // PH: ✅ worked → Sunday/PH hours
+            sundayHours = netWorkedHours;
+            basicHours = 0;
+            otHours = 0;
+            basicDay = 0;
+        } else {
+            // PH: ❌ worked → 8 basic hours must be given
+            basicHours = 8;
+            sundayHours = 0;
+            otHours = 0;
+            basicDay = 1; // 8 hours = 1 basic day
+        }
     } else {
-        // Basic hours capped at 8, OT is remaining hours
-        basicHours = Math.min(8, netWorkedHours);
-        otHours = Math.max(0, netWorkedHours - 8);
-        sundayHours = 0;
-        basicDay = basicHours / 8;
+        // Normal day logic
+        if (netWorkedHours > 0) {
+            // Normal: ✅ worked → Basic + OT
+            basicHours = Math.min(8, netWorkedHours);
+            otHours = Math.max(0, netWorkedHours - 8);
+            sundayHours = 0;
+            basicDay = basicHours / 8;
+        } else {
+            // Normal: ❌ worked → 0 hours
+            basicHours = 0;
+            sundayHours = 0;
+            otHours = 0;
+            basicDay = 0;
+        }
     }
 
     // Round to 2 decimal places
