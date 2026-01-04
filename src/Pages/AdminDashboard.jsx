@@ -5054,10 +5054,8 @@ export default function AdminDashboard() {
                                                                                 shift.breaks || [],
                                                                                 shift.work_date
                                                                             );
-                                                                            // Calculate break hours from breaks if break_hours is not available
-                                                                            const breakHours = shift.break_hours !== undefined && shift.break_hours !== null 
-                                                                                ? shift.break_hours 
-                                                                                : recalc.breakHours;
+                                                                            // Calculate break hours from breaks table - prioritize recalc over stored break_hours
+                                                                            const breakHours = recalc.breakHours || shift.break_hours || 0;
                                                                             
                                                                             return (
                                                                                 <div className="flex items-center gap-4 text-sm">
@@ -5117,10 +5115,8 @@ export default function AdminDashboard() {
                                                                                 shift.breaks || [],
                                                                                 shift.work_date
                                                                             );
-                                                                            // Calculate break hours from breaks if break_hours is not available
-                                                                            const breakHours = shift.break_hours !== undefined && shift.break_hours !== null 
-                                                                                ? shift.break_hours 
-                                                                                : recalc.breakHours;
+                                                                            // Calculate break hours from breaks table - prioritize recalc over stored break_hours
+                                                                            const breakHours = recalc.breakHours || shift.break_hours || 0;
                                                                             
                                                                             return (
                                                                                 <div>
