@@ -46,11 +46,11 @@ export default function LeaveHistory() {
             
             // Use the correct table and ID field based on worker type
             const tableName = workerType === 'local' ? 'local_worker_details' : 'worker_details';
-            const idField = workerType === 'local' ? 'employee_id' : 'id';
+            const idField = 'employee_id'; // Both tables use employee_id as the primary field
             
             const { data, error } = await supabase
                 .from(tableName)
-                .select('annual_leave_balance, medical_leave_balance')
+                .select('annual_leave_balance, medical_leave_balance, annual_leave_limit, medical_leave_limit')
                 .eq(idField, workerId)
                 .single();
 
@@ -60,7 +60,12 @@ export default function LeaveHistory() {
             }
 
             console.log(`✅ LEAVEHISTORY: ${workerType} worker balance data:`, data);
-            return data || { annual_leave_balance: 0, medical_leave_balance: 0 };
+            return data || { 
+                annual_leave_balance: 0, 
+                medical_leave_balance: 0,
+                annual_leave_limit: 10,
+                medical_leave_limit: 14
+            };
         },
         enabled: !!workerId
     });
@@ -195,7 +200,7 @@ export default function LeaveHistory() {
                                 </div>
                                 <div className="text-right">
                                     <div className="text-3xl font-bold text-green-800">
-                                        {isLoadingWorkerData ? '...' : (workerData?.annual_leave_balance ?? 10)}
+                                        {isLoadingWorkerData ? '...' : ((workerData?.annual_leave_limit ?? 10) - annualLeaveUsed)}
                                     </div>
                                     <p className="text-xs text-green-600">days remaining</p>
                                 </div>
@@ -216,13 +221,13 @@ export default function LeaveHistory() {
                                 </div>
                                 <div className="text-right">
                                     <div className="text-3xl font-bold text-blue-800">
-                                        {isLoadingWorkerData ? '...' : ((workerData?.medical_leave_balance ?? 14) - medicalLeaveUsed)}
+                                        {isLoadingWorkerData ? '...' : ((workerData?.medical_leave_limit ?? 14) - medicalLeaveUsed)}
                                     </div>
                                     <p className="text-xs text-blue-600">days remaining</p>
                                 </div>
                             </div>
                             <div className="mt-4 text-xs text-blue-700">
-                                Used: {medicalLeaveUsed} days • Total: {workerData?.medical_leave_balance ?? 14} days
+                                Used: {medicalLeaveUsed} days • Limit: {workerData?.medical_leave_limit ?? 14} days
                             </div>
                         </CardContent>
                     </Card>

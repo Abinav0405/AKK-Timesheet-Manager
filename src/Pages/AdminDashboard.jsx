@@ -3209,7 +3209,18 @@ export default function AdminDashboard() {
 
                 // Process each shift
                 if (shift.leave_type) {
-                    // Don't add leave hours to actual worked hours
+                    // Handle paid leave - add basic hours for paid leave types
+                    const paidLeaveTypes = [
+                        'Annual Leave', 'Maternity Leave', 'Paternity Leave', 'Shared Parental Leave',
+                        'Childcare Leave', 'Medical Leave', 'Hospitalization Leave', 'National Service (NS) Leave'
+                    ];
+                    
+                    if (paidLeaveTypes.includes(shift.leave_type)) {
+                        // Paid leave gets 8 basic hours
+                        monthlyBasicHours += 8;
+                        // Don't add to totalWorkedHours as it's not actual work
+                    }
+                    // Unpaid leave gets 0 hours (already handled by returning)
                     return;
                 } else if (shift.has_left) {
                     // Work shifts: use database values directly
